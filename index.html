@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<title>智權技術顧問 — 專利申請管理系統</title>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'PingFang TC','Noto Sans TC','Helvetica Neue',Arial,sans-serif;background:#F1F5F9;}
+input,select,button,textarea{font-family:inherit;}
+::-webkit-scrollbar{width:6px;height:6px;}
+::-webkit-scrollbar-track{background:#F1F5F9;}
+::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:3px;}
+@media(max-width:768px){
+  table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  .modal-wide{max-width:95vw!important;padding:20px 16px!important;}
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const{useState,useEffect,useMemo,useCallback}=React;
+
+// ── Supabase 設定 ────────────────────────────────────────
+// !! 部署前請替換成你自己的 Supabase URL 和 Key !!
+const SB_URL = "https://fcqjdkndpywbynrkfmur.supabase.co";
+const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZjcWpka25kcHl3YnlucmtmbXVyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1NDQ4OTcsImV4cCI6MjA5NzEyMDg5N30.rXAn6qoin2qttMptlcwELEtB2lv-EptpDusEnR4lqMg";
+
+const sbFetch = async (path, opts={}) => {
+  const res = await fetch(`${SB_URL}/rest/v1/${path}`, {
+    headers: {
+      "apikey": SB_KEY,
+      "Authorization": `Bearer ${SB_KEY}`,
+      "Content-Type": "application/json",
+      "Prefer": "return=representation",
+      ...(opts.headers||{})
+    },
+    ...opts
+  });
+  if (!res.ok) { const e = await res.text(); throw new Error(e); }
+  return res.status === 204 ? null : res.json();
+};
+
+// ── 帳號 API ──────────────────────────────────────────────
+const loginUser = async (email, password) => {
+  const rows = await sbFetch(`patent_users?email=eq.${encodeURIComponent(email.trim().toLowerCase())}&select=*`);
+  if (!rows || rows.length === 0) return null;
+  const u = rows[0];
+  if (u.password !== password.trim() || u.active === false) return null;
+  return u;
+};
+const loadUsers  = async () => { try { return await sbFetch("patent_users?select=*&order=created_at.asc"); } catch { return []; } };
+const saveUser   = async (u, isNew) => isNew
+  ? sbFetch("patent_users", {method:"POST", body:JSON.stringify(u)})
+  : sbFetch(`patent_users?id=eq.${u.id}`, {method:"PATCH", body:JSON.stringify(u)});
+const deleteUser = async (id) => sbFetch(`patent_users?id=eq.${id}`, {method:"DELETE"});
+
+// ── 專利案件 API ──────────────────────────────────────────
+const loadPatents  = async () => { try { return await sbFetch("patents?select=*&order=created_at.desc"); } catch { return []; } };
+const savePatent   = async (p, isNew) => isNew
+  ? sbFetch("patents", {method:"POST", body:JSON.stringify(p)})
+  : sbFetch(`patents?id=eq.${p.id}`, {method:"PATCH", body:JSON.stringify(p)});
+const deletePatent = async (id) => sbFetch(`patents?id=eq.${id}`, {method:"DELETE"});
+
+// ── 常數 ──────────────────────────────────────────────────
+const PATENT_TYPES   = ["新型","發明"];
+const PATENT_STATUS  = ["申請中","實體審查中","已核准","維護中","已到期","已放棄"];
+const ROLE_INFO = {
+  admin:   {label:"管理員", bg:"#FEF3C7", tx:"#92400E", desc:"全功能，含帳號管理"},
+  attorney:{label:"專利師", bg:"#DBEAFE", tx:"#1E40AF", desc:"可新增/編輯所有案件"},
+  viewer:  {label:"觀察者", bg:"#F3F4F6", tx:"#374151", desc:"僅能查看，無法修改"},
+};
+const SCOL = {
+  "申請中":    {bg:"#EFF6FF",tx:"#1D4ED8",bd:"#BFDBFE"},
+  "實體審查中":{bg:"#F5F3FF",tx:"#6D28D9",bd:"#DDD6FE"},
+  "已核准":    {bg:"#F0FDF4",tx:"#15803D",bd:"#BBF7D0"},
+  "維護中":    {bg:"#FFFBEB",tx:"#B45309",bd:"#FDE68A"},
+  "已到期":    {bg:"#FEF2F2",tx:"#B91C1C",bd:"#FECACA"},
+  "已放棄":    {bg:"#F3F4F6",tx:"#6B7280",bd:"#D1D5DB"},
+};
+const fmt  = n => isNaN(n) ? "0" : new Intl.NumberFormat("zh-TW").format(Math.round(Number(n)));
+const today = () => new Date().toISOString().slice(0,10);
+const addMonths = (d,m) => { const dt=new Date(d); dt.setMonth(dt.getMonth()+m); return dt.toISOString().slice(0,10); };
+const addYears  = (d,y) => { const dt=new Date(d); dt.setFullYear(dt.getFullYear()+y); return dt.toISOString().slice(0,10); };
+const profit = r => (+r.service_fee||0)-(+r.app_fee||0)-(+r.other_cost||0);
+const toCSV = (headers,rows) => { const e=v=>{const s=v==null?"":String(v);return(s.includes(",")||s.includes('"')||s.includes("\n"))?`"${s.replace(/"/g,'""')}"`:s;}; return [headers,...rows].map(r=>r.map(e).join(",")).join("\n"); };
+const dlCSV = (name,csv) => { const b=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"}); const u=URL.createObjectURL(b); const a=document.createElement("a"); a.href=u; a.download=name; a.click(); URL.revokeObjectURL(u); };
+
+// ── 共用 UI ──────────────────────────────────────────────
+const inp = {width:"100%",border:"1px solid #D1D5DB",borderRadius:8,padding:"8px 12px",fontSize:14,color:"#111827",background:"#fff",boxSizing:"border-box",outline:"none"};
+
+function Btn({children,onClick,variant="primary",small,disabled,type="button"}){
+  const s = {
+    primary:{background:"#2563EB",color:"#fff",border:"none"},
+    ghost:  {background:"#F3F4F6",color:"#374151",border:"1px solid #E5E7EB"},
+    danger: {background:"#FEF2F2",color:"#B91C1C",border:"1px solid #FECACA"},
+    success:{background:"#F0FDF4",color:"#15803D",border:"1px solid #BBF7D0"},
+  };
+  return <button type={type} disabled={disabled} style={{borderRadius:8,cursor:disabled?"not-allowed":"pointer",fontWeight:600,fontSize:small?12:14,padding:small?"5px 12px":"9px 18px",opacity:disabled?0.6:1,...s[variant||"primary"]}} onClick={onClick}>{children}</button>;
+}
+
+function Modal({title,onClose,children,wide}){
+  return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}} onClick={onClose}>
+    <div className="modal-wide" style={{background:"#fff",borderRadius:16,width:"100%",maxWidth:wide?760:560,padding:"28px 32px",boxShadow:"0 20px 60px rgba(0,0,0,0.18)",maxHeight:"90vh",overflowY:"auto"}} onClick={e=>e.stopPropagation()}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:24}}>
+        <h2 style={{margin:0,fontSize:18,fontWeight:700,color:"#111827"}}>{title}</h2>
+        <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,cursor:"pointer",color:"#9CA3AF"}}>×</button>
+      </div>
+      {children}
+    </div>
+  </div>;
+}
+
+function KpiCard({label,value,sub,accent,icon}){
+  return <div style={{background:"#fff",borderRadius:14,padding:"20px 22px",border:"1px solid #E5E7EB",borderTop:`4px solid ${accent}`}}>
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}><span style={{fontSize:20}}>{icon}</span><span style={{fontSize:12,color:"#6B7280",fontWeight:500}}>{label}</span></div>
+    <div style={{fontSize:22,fontWeight:800,color:"#111827"}}>{value}</div>
+    {sub && <div style={{fontSize:11,color:"#9CA3AF",marginTop:5}}>{sub}</div>}
+  </div>;
+}
+
+function Card({children,style}){return <div style={{background:"#fff",borderRadius:14,border:"1px solid #E5E7EB",overflow:"hidden",...style}}>{children}</div>;}
+function Empty({icon,msg}){return <div style={{textAlign:"center",padding:"48px 0",color:"#9CA3AF",fontSize:14}}><div style={{fontSize:36,marginBottom:10}}>{icon}</div>{msg}</div>;}
+function Field({label,children,half,full}){return <div style={{marginBottom:14,gridColumn:full?"span 2":half?"span 1":"span 2"}}><label style={{display:"block",fontSize:13,fontWeight:600,color:"#374151",marginBottom:5}}>{label}</label>{children}</div>;}
+function FormGrid({children}){return <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0 16px"}}>{children}</div>;}
+function SaveRow({onSave,onClose,label="儲存"}){return <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:16}}><Btn variant="ghost" onClick={onClose}>取消</Btn><Btn onClick={onSave}>{label}</Btn></div>;}
+function StatusBadge({status}){const c=SCOL[status]||{bg:"#F3F4F6",tx:"#374151"};return <span style={{background:c.bg,color:c.tx,border:`1px solid ${c.bd||"#E5E7EB"}`,borderRadius:20,padding:"2px 10px",fontSize:12,fontWeight:600,whiteSpace:"nowrap"}}>{status}</span>;}
+function RoleBadge({role}){const r=ROLE_INFO[role]||ROLE_INFO.viewer;return <span style={{background:r.bg,color:r.tx,borderRadius:6,padding:"2px 10px",fontSize:12,fontWeight:600}}>{r.label}</span>;}
+function TypeBadge({type}){const c=type==="發明"?{bg:"#EFF6FF",tx:"#1D4ED8"}:{bg:"#EEEDFE",tx:"#3C3489"};return <span style={{background:c.bg,color:c.tx,borderRadius:20,padding:"2px 10px",fontSize:12,fontWeight:600}}>{type}</span>;}
+function SecHdr({title,onAdd,addLabel,onExport,canEdit=true}){
+  return <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}}>
+    <h2 style={{margin:0,fontSize:17,fontWeight:700,color:"#111827"}}>{title}</h2>
+    <div style={{display:"flex",gap:8}}>
+      {onExport && <Btn variant="ghost" onClick={onExport}>⬇ 匯出 CSV</Btn>}
+      {onAdd && canEdit && <Btn onClick={onAdd}>+ {addLabel}</Btn>}
+    </div>
+  </div>;
+}
+
+// ══════════════════════════════════════════════════════════
+// 登入頁
+// ══════════════════════════════════════════════════════════
+function LoginPage({onLogin}){
+  const [email,setEmail] = useState("");
+  const [pw,setPw]       = useState("");
+  const [err,setErr]     = useState("");
+  const [loading,setLoading] = useState(false);
+  const [showPw,setShowPw]   = useState(false);
+
+  const handle = async () => {
+    if (!email.trim() || !pw.trim()) { setErr("請輸入信箱和密碼"); return; }
+    setLoading(true); setErr("");
+    try {
+      const u = await loginUser(email, pw);
+      if (u) onLogin(u);
+      else setErr("信箱或密碼錯誤，或帳號已停用");
+    } catch(e) {
+      setErr("無法連線至伺服器，請確認網路或 Supabase 設定");
+    }
+    setLoading(false);
+  };
+
+  return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"linear-gradient(135deg,#EFF6FF,#F0FDF4)"}}>
+    <div style={{background:"#fff",borderRadius:20,padding:"48px 40px",width:"100%",maxWidth:420,boxShadow:"0 8px 40px rgba(0,0,0,0.10)"}}>
+      <div style={{textAlign:"center",marginBottom:36}}>
+        <div style={{width:60,height:60,margin:"0 auto 16px",background:"linear-gradient(135deg,#1D4ED8,#059669)",borderRadius:18,display:"flex",alignItems:"center",justifyContent:"center",fontSize:30}}>⚖️</div>
+        <div style={{fontWeight:800,fontSize:20,color:"#111827",letterSpacing:-0.5}}>智權技術顧問</div>
+        <div style={{fontSize:13,color:"#6B7280",marginTop:4}}>專利申請管理系統</div>
+        <div style={{fontSize:11,color:"#9CA3AF",marginTop:2,letterSpacing:1}}>IP Management System</div>
+      </div>
+
+      <div style={{marginBottom:14}}>
+        <label style={{display:"block",fontSize:13,fontWeight:600,color:"#374151",marginBottom:6}}>電子信箱</label>
+        <input style={inp} type="email" value={email} placeholder="your@email.com"
+          onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handle()}/>
+      </div>
+      <div style={{marginBottom:20}}>
+        <label style={{display:"block",fontSize:13,fontWeight:600,color:"#374151",marginBottom:6}}>密碼</label>
+        <div style={{position:"relative"}}>
+          <input style={{...inp,paddingRight:40}} type={showPw?"text":"password"} value={pw} placeholder="••••••••"
+            onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handle()}/>
+          <button onClick={()=>setShowPw(x=>!x)} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:"#9CA3AF",fontSize:15}}>{showPw?"🙈":"👁️"}</button>
+        </div>
+      </div>
+
+      {err && <div style={{background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:8,padding:"10px 14px",color:"#B91C1C",fontSize:13,marginBottom:16}}>⚠️ {err}</div>}
+
+      <button onClick={handle} disabled={loading} style={{width:"100%",padding:"13px 0",background:"#1D4ED8",color:"#fff",border:"none",borderRadius:10,fontSize:15,fontWeight:700,cursor:loading?"not-allowed":"pointer",opacity:loading?0.7:1}}>
+        {loading ? "登入中…" : "登入"}
+      </button>
+
+      <div style={{marginTop:20,background:"#F9FAFB",borderRadius:10,padding:"14px 16px",fontSize:12,color:"#6B7280"}}>
+        <div style={{fontWeight:700,marginBottom:4,color:"#374151"}}>📋 預設管理員帳號</div>
+        <div>admin@ipfirm.com</div>
+        <div style={{marginTop:2,color:"#9CA3AF"}}>首次登入後請至「帳號管理」修改密碼</div>
+      </div>
+    </div>
+  </div>;
+}
+
+// ══════════════════════════════════════════════════════════
+// 帳號管理
+// ══════════════════════════════════════════════════════════
+function UsersTab({currentUser}){
+  const [users,setUsers]   = useState([]);
+  const [modal,setModal]   = useState(null);
+  const [loading,setLoading] = useState(true);
+
+  useEffect(()=>{ loadUsers().then(u=>{setUsers(u);setLoading(false);}); },[]);
+
+  const handleSave = async (u) => {
+    const isNew = !u.id;
+    if (isNew) { u.id = crypto.randomUUID(); u.created_at = new Date().toISOString(); }
+    try { await saveUser(u, isNew); setUsers(await loadUsers()); setModal(null); }
+    catch(e){ alert("儲存失敗："+e.message); }
+  };
+  const handleDelete = async (id) => {
+    if (id===currentUser.id) { alert("無法刪除自己的帳號"); return; }
+    if (!confirm("確定要刪除此帳號？")) return;
+    try { await deleteUser(id); setUsers(await loadUsers()); } catch(e){ alert("刪除失敗："+e.message); }
+  };
+
+  if (loading) return <div style={{textAlign:"center",padding:60,color:"#9CA3AF"}}>載入帳號中…</div>;
+
+  return <div>
+    <SecHdr title="👤 帳號管理" onAdd={()=>setModal({mode:"add",item:null})} addLabel="新增帳號"/>
+    <Card>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
+        <thead><tr style={{background:"#F9FAFB"}}>
+          {["姓名","信箱","角色","狀態","建立日期","操作"].map(h=><th key={h} style={{padding:"11px 16px",textAlign:"left",fontWeight:600,color:"#6B7280",fontSize:12,borderBottom:"1px solid #F3F4F6"}}>{h}</th>)}
+        </tr></thead>
+        <tbody>
+          {users.map(u=><tr key={u.id} style={{borderBottom:"1px solid #F9FAFB"}}>
+            <td style={{padding:"12px 16px",fontWeight:600,color:"#111827"}}>{u.name}</td>
+            <td style={{padding:"12px 16px",color:"#6B7280",fontSize:13}}>{u.email}</td>
+            <td style={{padding:"12px 16px"}}><RoleBadge role={u.role}/></td>
+            <td style={{padding:"12px 16px"}}>
+              <span style={{background:u.active===false?"#FEF2F2":"#F0FDF4",color:u.active===false?"#B91C1C":"#15803D",borderRadius:6,padding:"2px 8px",fontSize:12}}>
+                {u.active===false?"已停用":"啟用中"}
+              </span>
+            </td>
+            <td style={{padding:"12px 16px",color:"#9CA3AF",fontSize:12}}>{u.created_at?.slice(0,10)||"—"}</td>
+            <td style={{padding:"12px 16px"}}>
+              <button onClick={()=>setModal({mode:"edit",item:u})} style={{background:"none",border:"none",color:"#2563EB",cursor:"pointer",fontSize:13,marginRight:12}}>編輯</button>
+              {u.id!==currentUser.id && <button onClick={()=>handleDelete(u.id)} style={{background:"none",border:"none",color:"#EF4444",cursor:"pointer",fontSize:13}}>刪除</button>}
+            </td>
+          </tr>)}
+        </tbody>
+      </table>
+      {users.length===0 && <Empty icon="👤" msg="尚無帳號"/>}
+    </Card>
+
+    <div style={{marginTop:16,background:"#F0F9FF",border:"1px solid #BAE6FD",borderRadius:10,padding:"14px 16px",fontSize:13,color:"#0369A1"}}>
+      ✅ 帳號資料已同步至 Supabase，所有裝置即時共用登入狀態。
+    </div>
+
+    {modal && <Modal title={modal.mode==="add"?"新增帳號":"編輯帳號"} onClose={()=>setModal(null)} wide>
+      <UserForm initial={modal.item} currentUser={currentUser} onSave={handleSave} onClose={()=>setModal(null)}/>
+    </Modal>}
+  </div>;
+}
+
+function UserForm({initial,currentUser,onSave,onClose}){
+  const blank = {name:"",email:"",password:"",role:"attorney",active:true};
+  const [f,setF] = useState(initial ? {...initial,password:""} : blank);
+  const [showPw,setShowPw] = useState(false);
+  const s = (k,v) => setF(x=>({...x,[k]:v}));
+
+  const handle = () => {
+    if (!f.name||!f.email){ alert("請填寫姓名和信箱"); return; }
+    if (!initial && !f.password){ alert("新增帳號請設定密碼"); return; }
+    if (f.password && f.password.length<6){ alert("密碼至少 6 個字元"); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email)){ alert("請輸入有效信箱"); return; }
+    const saved = {...f};
+    if (initial && !f.password) saved.password = initial.password;
+    onSave(saved);
+  };
+
+  return <>
+    <FormGrid>
+      <Field label="姓名 *" half><input style={inp} value={f.name} onChange={e=>s("name",e.target.value)} placeholder="例：陳志遠"/></Field>
+      <Field label="電子信箱 *" half><input style={inp} type="email" value={f.email} onChange={e=>s("email",e.target.value)} placeholder="chen@ipfirm.com" disabled={!!initial}/></Field>
+      <Field label={initial?"新密碼（留空保持不變）":"密碼 *"} half>
+        <div style={{position:"relative"}}>
+          <input style={{...inp,paddingRight:40}} type={showPw?"text":"password"} value={f.password} onChange={e=>s("password",e.target.value)} placeholder={initial?"輸入新密碼才會變更":"至少 6 個字元"}/>
+          <button onClick={()=>setShowPw(x=>!x)} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:"#9CA3AF"}}>{showPw?"🙈":"👁️"}</button>
+        </div>
+      </Field>
+      <Field label="角色" half>
+        <select style={inp} value={f.role} onChange={e=>s("role",e.target.value)} disabled={initial?.id===currentUser?.id}>
+          {Object.entries(ROLE_INFO).map(([k,v])=><option key={k} value={k}>{v.label} — {v.desc}</option>)}
+        </select>
+      </Field>
+      {initial && <Field label="帳號狀態" half>
+        <select style={inp} value={f.active?"active":"inactive"} onChange={e=>s("active",e.target.value==="active")} disabled={initial?.id===currentUser?.id}>
+          <option value="active">✅ 啟用</option>
+          <option value="inactive">🔴 停用</option>
+        </select>
+      </Field>}
+    </FormGrid>
+    <SaveRow onSave={handle} onClose={onClose}/>
+  </>;
+}
+
+// ══════════════════════════════════════════════════════════
+// 專利案件表單
+// ══════════════════════════════════════════════════════════
+function PatentForm({initial,onSave,onClose}){
+  const blank = {
+    case_no:"", name:"", type:"新型", client:"",
+    app_date:"", approve_date:"",
+    tech_desc:"", claim_desc:"",
+    status:"申請中",
+    service_fee:0, app_fee:0, other_cost:0,
+    maint_date:"", maint_fee:0, maint_note:""
+  };
+  const [f,setF] = useState(initial||blank);
+  const s = (k,v) => setF(x=>({...x,[k]:v}));
+
+  const handle = () => {
+    if (!f.name||!f.client){ alert("請填寫案件名稱與客戶名稱"); return; }
+    onSave(f);
+  };
+
+  return <>
+    <FormGrid>
+      <Field label="案件編號" half><input style={inp} value={f.case_no} onChange={e=>s("case_no",e.target.value)} placeholder="例：PAT-2024-001"/></Field>
+      <Field label="申請類型" half>
+        <select style={inp} value={f.type} onChange={e=>s("type",e.target.value)}>
+          {PATENT_TYPES.map(t=><option key={t}>{t}</option>)}
+        </select>
+      </Field>
+      <Field label="案件名稱 *" half><input style={inp} value={f.name} onChange={e=>s("name",e.target.value)} placeholder="例：高效散熱結構"/></Field>
+      <Field label="客戶名稱 *" half><input style={inp} value={f.client} onChange={e=>s("client",e.target.value)} placeholder="例：台達電子"/></Field>
+      <Field label="申請日期" half><input style={inp} type="date" value={f.app_date} onChange={e=>s("app_date",e.target.value)}/></Field>
+      <Field label="核准/公告日期" half><input style={inp} type="date" value={f.approve_date} onChange={e=>s("approve_date",e.target.value)}/></Field>
+      <Field label="狀態" half>
+        <select style={inp} value={f.status} onChange={e=>s("status",e.target.value)}>
+          {PATENT_STATUS.map(st=><option key={st}>{st}</option>)}
+        </select>
+      </Field>
+      <Field label="&nbsp;" half><div/></Field>
+      <Field label="技術內容描述">
+        <textarea style={{...inp,minHeight:80,resize:"vertical"}} value={f.tech_desc} onChange={e=>s("tech_desc",e.target.value)} placeholder="描述發明/新型的技術特徵、解決問題與技術手段…"/>
+      </Field>
+      <Field label="Claim 描述">
+        <textarea style={{...inp,minHeight:80,resize:"vertical"}} value={f.claim_desc} onChange={e=>s("claim_desc",e.target.value)} placeholder="獨立項 1：一種…，其特徵在於…&#10;附屬項 2：如請求項 1 所述，其中…"/>
+      </Field>
+    </FormGrid>
+
+    <div style={{fontWeight:600,fontSize:13,color:"#374151",margin:"8px 0 12px",paddingTop:8,borderTop:"1px solid #F3F4F6"}}>費用結構</div>
+    <FormGrid>
+      <Field label="服務費 (NTD)" half><input style={inp} type="number" min="0" value={f.service_fee} onChange={e=>s("service_fee",+e.target.value)}/></Field>
+      <Field label="申請規費 (NTD)" half><input style={inp} type="number" min="0" value={f.app_fee} onChange={e=>s("app_fee",+e.target.value)}/></Field>
+      <Field label="其他成本 (NTD)" half><input style={inp} type="number" min="0" value={f.other_cost} onChange={e=>s("other_cost",+e.target.value)}/></Field>
+      <Field label={`淨利潤 → NT$ ${fmt(profit(f))}`} half>
+        <div style={{padding:"8px 12px",background:"#F9FAFB",border:"1px solid #E5E7EB",borderRadius:8,fontSize:14,color:profit(f)>=0?"#15803D":"#B91C1C",fontWeight:700}}>
+          NT$ {fmt(profit(f))}
+        </div>
+      </Field>
+    </FormGrid>
+
+    <div style={{fontWeight:600,fontSize:13,color:"#374151",margin:"8px 0 12px",paddingTop:8,borderTop:"1px solid #F3F4F6"}}>維護資訊</div>
+    <FormGrid>
+      <Field label="下次維護費繳納日" half><input style={inp} type="date" value={f.maint_date} onChange={e=>s("maint_date",e.target.value)}/></Field>
+      <Field label="維護費用 (NTD)" half><input style={inp} type="number" min="0" value={f.maint_fee} onChange={e=>s("maint_fee",+e.target.value)}/></Field>
+      <Field label="維護備註"><input style={inp} value={f.maint_note} onChange={e=>s("maint_note",e.target.value)} placeholder="例：第3年年費、需提早60天繳納"/></Field>
+    </FormGrid>
+
+    <SaveRow onSave={handle} onClose={onClose}/>
+  </>;
+}
+
+// ══════════════════════════════════════════════════════════
+// 申請案件列表
+// ══════════════════════════════════════════════════════════
+function PatentsTab({patents,setPatents,role}){
+  const canEdit = role !== "viewer";
+  const [search,setSearch] = useState("");
+  const [fType,setFType]   = useState("");
+  const [fStatus,setFStatus]= useState("");
+  const [modal,setModal]   = useState(null);
+  const [detail,setDetail] = useState(null);
+  const [saving,setSaving] = useState(false);
+
+  const filtered = useMemo(()=>patents.filter(r=>{
+    if (search && !r.name?.toLowerCase().includes(search.toLowerCase()) && !r.client?.toLowerCase().includes(search.toLowerCase())) return false;
+    if (fType   && r.type   !== fType)   return false;
+    if (fStatus && r.status !== fStatus) return false;
+    return true;
+  }),[patents,search,fType,fStatus]);
+
+  const handleSave = async (f) => {
+    setSaving(true);
+    const isNew = !f.id;
+    if (isNew) { f.id = crypto.randomUUID(); f.created_at = new Date().toISOString(); }
+    try {
+      await savePatent(f, isNew);
+      setPatents(await loadPatents());
+      setModal(null);
+    } catch(e){ alert("儲存失敗："+e.message); }
+    setSaving(false);
+  };
+
+  const handleDelete = async (id) => {
+    if (!confirm("確定要刪除此案件？此操作無法復原。")) return;
+    try { await deletePatent(id); setPatents(await loadPatents()); setDetail(null); } catch(e){ alert("刪除失敗"); }
+  };
+
+  const exportCsv = () => {
+    const headers = ["案件編號","案件名稱","類型","客戶","申請日期","核准日期","狀態","服務費","申請規費","其他成本","淨利潤","維護日期","維護費","維護備註"];
+    const rows = patents.map(r=>[r.case_no||"",r.name,r.type,r.client,r.app_date||"",r.approve_date||"",r.status,r.service_fee||0,r.app_fee||0,r.other_cost||0,profit(r),r.maint_date||"",r.maint_fee||0,r.maint_note||""]);
+    dlCSV(`專利案件_${today()}.csv`, toCSV(headers,rows));
+  };
+
+  return <div>
+    <SecHdr title="📋 申請案件" onAdd={()=>setModal({item:null})} addLabel="新增專利" onExport={exportCsv} canEdit={canEdit}/>
+
+    <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:16,alignItems:"center"}}>
+      <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="搜尋案件名稱、客戶…" style={{...inp,width:200,padding:"7px 12px",fontSize:13}}/>
+      <select value={fType} onChange={e=>setFType(e.target.value)} style={{...inp,width:130,padding:"7px 10px",fontSize:13}}>
+        <option value="">全部類型</option>
+        {PATENT_TYPES.map(t=><option key={t}>{t}</option>)}
+      </select>
+      <select value={fStatus} onChange={e=>setFStatus(e.target.value)} style={{...inp,width:150,padding:"7px 10px",fontSize:13}}>
+        <option value="">全部狀態</option>
+        {PATENT_STATUS.map(s=><option key={s}>{s}</option>)}
+      </select>
+      <span style={{fontSize:12,color:"#9CA3AF",marginLeft:"auto"}}>{filtered.length} 件</span>
+    </div>
+
+    <Card>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+        <thead><tr style={{background:"#F9FAFB"}}>
+          {["案件名稱","類型","客戶","申請日","服務費","成本","利潤","狀態","操作"].map(h=><th key={h} style={{padding:"10px 14px",textAlign:"left",fontWeight:600,color:"#6B7280",fontSize:12,borderBottom:"1px solid #F3F4F6",whiteSpace:"nowrap"}}>{h}</th>)}
+        </tr></thead>
+        <tbody>
+          {filtered.map(r=>{
+            const p = profit(r);
+            return <tr key={r.id} style={{borderBottom:"1px solid #F9FAFB"}} onMouseEnter={e=>e.currentTarget.style.background="#F9FAFB"} onMouseLeave={e=>e.currentTarget.style.background=""}>
+              <td style={{padding:"10px 14px",fontWeight:600,color:"#111827",maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={r.name}>{r.name}</td>
+              <td style={{padding:"10px 14px"}}><TypeBadge type={r.type}/></td>
+              <td style={{padding:"10px 14px",color:"#374151"}}>{r.client}</td>
+              <td style={{padding:"10px 14px",color:"#6B7280",whiteSpace:"nowrap"}}>{r.app_date||"—"}</td>
+              <td style={{padding:"10px 14px",color:"#374151"}}>NT${fmt(r.service_fee)}</td>
+              <td style={{padding:"10px 14px",color:"#6B7280"}}>NT${fmt((+r.app_fee||0)+(+r.other_cost||0))}</td>
+              <td style={{padding:"10px 14px",fontWeight:700,color:p>=0?"#15803D":"#B91C1C"}}>NT${fmt(p)}</td>
+              <td style={{padding:"10px 14px"}}><StatusBadge status={r.status}/></td>
+              <td style={{padding:"10px 14px",whiteSpace:"nowrap"}}>
+                <button onClick={()=>setDetail(r)} style={{background:"none",border:"none",color:"#2563EB",cursor:"pointer",fontSize:13,marginRight:8}}>查看</button>
+                {canEdit && <button onClick={()=>setModal({item:r})} style={{background:"none",border:"none",color:"#7C3AED",cursor:"pointer",fontSize:13,marginRight:8}}>編輯</button>}
+                {canEdit && <button onClick={()=>handleDelete(r.id)} style={{background:"none",border:"none",color:"#EF4444",cursor:"pointer",fontSize:13}}>刪除</button>}
+              </td>
+            </tr>;
+          })}
+        </tbody>
+      </table>
+      {filtered.length===0 && <Empty icon="📋" msg="尚無符合條件的案件"/>}
+    </Card>
+
+    {modal && <Modal title={modal.item?"編輯專利案件":"新增專利案件"} onClose={()=>setModal(null)} wide>
+      <PatentForm initial={modal.item} onSave={handleSave} onClose={()=>setModal(null)}/>
+    </Modal>}
+
+    {detail && <Modal title={detail.name} onClose={()=>setDetail(null)} wide>
+      <PatentDetail r={detail} onEdit={()=>{setModal({item:detail});setDetail(null);}} onDelete={()=>handleDelete(detail.id)} canEdit={canEdit}/>
+    </Modal>}
+  </div>;
+}
+
+function PatentDetail({r,onEdit,onDelete,canEdit}){
+  const p = profit(r);
+  return <div>
+    <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+      <TypeBadge type={r.type}/>
+      <StatusBadge status={r.status}/>
+      {r.case_no && <span style={{background:"#F3F4F6",color:"#374151",borderRadius:20,padding:"2px 10px",fontSize:12}}>{r.case_no}</span>}
+      {canEdit && <><button onClick={onEdit} style={{marginLeft:"auto",background:"none",border:"1px solid #D1D5DB",borderRadius:8,padding:"5px 14px",cursor:"pointer",fontSize:13,color:"#374151"}}>✏️ 編輯</button>
+      <button onClick={onDelete} style={{background:"none",border:"1px solid #FECACA",borderRadius:8,padding:"5px 14px",cursor:"pointer",fontSize:13,color:"#B91C1C"}}>🗑 刪除</button></>}
+    </div>
+
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:16}}>
+      {[["客戶",r.client],["申請日",r.app_date||"—"],["核准日",r.approve_date||"—"]].map(([l,v])=>
+        <div key={l} style={{background:"#F9FAFB",borderRadius:10,padding:"12px 14px"}}>
+          <div style={{fontSize:11,color:"#9CA3AF",marginBottom:4}}>{l}</div>
+          <div style={{fontSize:14,fontWeight:600,color:"#111827"}}>{v}</div>
+        </div>
+      )}
+    </div>
+
+    <div style={{marginBottom:14}}>
+      <div style={{fontSize:12,fontWeight:600,color:"#6B7280",marginBottom:6}}>技術內容</div>
+      <div style={{background:"#F9FAFB",borderRadius:10,padding:14,fontSize:13,color:"#374151",lineHeight:1.7}}>{r.tech_desc||"—"}</div>
+    </div>
+    <div style={{marginBottom:16}}>
+      <div style={{fontSize:12,fontWeight:600,color:"#6B7280",marginBottom:6}}>Claim 描述</div>
+      <div style={{background:"#F9FAFB",borderRadius:10,padding:14,fontSize:13,color:"#374151",lineHeight:1.7,whiteSpace:"pre-wrap"}}>{r.claim_desc||"—"}</div>
+    </div>
+
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:10,marginBottom:16}}>
+      {[["服務費",`NT$${fmt(r.service_fee)}`,"#1D4ED8"],["申請規費",`NT$${fmt(r.app_fee)}`,"#B45309"],["其他成本",`NT$${fmt(r.other_cost)}`,"#6B7280"],["淨利潤",`NT$${fmt(p)}`,p>=0?"#15803D":"#B91C1C"]].map(([l,v,c])=>
+        <div key={l} style={{background:"#F9FAFB",borderRadius:10,padding:"12px 14px"}}>
+          <div style={{fontSize:11,color:"#9CA3AF",marginBottom:4}}>{l}</div>
+          <div style={{fontSize:14,fontWeight:700,color:c}}>{v}</div>
+        </div>
+      )}
+    </div>
+
+    {(r.maint_date||r.maint_fee>0) && <div style={{background:"#FFFBEB",border:"1px solid #FDE68A",borderRadius:10,padding:14}}>
+      <div style={{fontWeight:600,color:"#B45309",marginBottom:8,fontSize:13}}>📅 維護資訊</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,fontSize:13}}>
+        <div><span style={{color:"#9CA3AF"}}>繳費日：</span><span style={{fontWeight:600,color:"#111827"}}>{r.maint_date||"—"}</span></div>
+        <div><span style={{color:"#9CA3AF"}}>金額：</span><span style={{fontWeight:600,color:"#111827"}}>NT${fmt(r.maint_fee)}</span></div>
+        <div><span style={{color:"#9CA3AF"}}>備註：</span><span style={{color:"#374151"}}>{r.maint_note||"—"}</span></div>
+      </div>
+    </div>}
+  </div>;
+}
+
+// ══════════════════════════════════════════════════════════
+// 維護追蹤
+// ══════════════════════════════════════════════════════════
+function MaintTab({patents}){
+  const now = new Date();
+  const hasMaint = patents.filter(r=>r.maint_date||r.maint_fee>0);
+  const urgent   = hasMaint.filter(r=>{ if(!r.maint_date)return false; const d=(new Date(r.maint_date)-now)/86400000; return d>=0&&d<=30; });
+
+  const sorted = [...hasMaint].sort((a,b)=>{
+    if(!a.maint_date) return 1;
+    if(!b.maint_date) return -1;
+    return new Date(a.maint_date)-new Date(b.maint_date);
+  });
+
+  const diffLabel = (d) => {
+    if(!d) return null;
+    const diff = Math.round((new Date(d)-now)/86400000);
+    if(diff<0)  return {txt:`已到期 ${Math.abs(diff)}天前`,c:"#B91C1C",bg:"#FEF2F2"};
+    if(diff<=30)return {txt:`${diff}天後到期`,c:"#B91C1C",bg:"#FEF2F2"};
+    if(diff<=90)return {txt:`${diff}天後到期`,c:"#B45309",bg:"#FFFBEB"};
+    return {txt:`${diff}天後到期`,c:"#15803D",bg:"#F0FDF4"};
+  };
+
+  return <div>
+    <h2 style={{margin:"0 0 18px",fontSize:17,fontWeight:700,color:"#111827"}}>🔔 維護追蹤</h2>
+    {urgent.length>0 && <div style={{background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:10,padding:"12px 16px",marginBottom:16,color:"#B91C1C",fontSize:14,fontWeight:600}}>
+      ⚠️ {urgent.length} 件維護費即將在30天內到期，請儘速處理。
+    </div>}
+    {sorted.length===0 ? <Empty icon="✅" msg="目前無維護追蹤資料"/> :
+    <div style={{display:"grid",gap:12}}>
+      {sorted.map(r=>{
+        const dl = diffLabel(r.maint_date);
+        return <Card key={r.id} style={{padding:"16px 20px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+            <div>
+              <span style={{fontWeight:700,fontSize:15,color:"#111827"}}>{r.name}</span>
+              <span style={{marginLeft:10}}><TypeBadge type={r.type}/></span>
+              <div style={{fontSize:12,color:"#9CA3AF",marginTop:4}}>{r.client}</div>
+            </div>
+            {dl && <span style={{background:dl.bg,color:dl.c,borderRadius:20,padding:"3px 12px",fontSize:12,fontWeight:700}}>{dl.txt}</span>}
+          </div>
+          <div style={{display:"flex",gap:20,fontSize:13,color:"#6B7280",flexWrap:"wrap"}}>
+            <span>📅 繳費日：<b style={{color:"#111827"}}>{r.maint_date||"未設定"}</b></span>
+            <span>💰 金額：<b style={{color:"#111827"}}>NT${fmt(r.maint_fee)}</b></span>
+            {r.maint_note && <span>📌 {r.maint_note}</span>}
+          </div>
+        </Card>;
+      })}
+    </div>}
+  </div>;
+}
+
+// ══════════════════════════════════════════════════════════
+// 利潤分析
+// ══════════════════════════════════════════════════════════
+function AnalysisTab({patents}){
+  if(!patents.length) return <Empty icon="📊" msg="尚無案件資料可分析"/>;
+
+  const totalRev  = patents.reduce((s,r)=>s+(+r.service_fee||0),0);
+  const totalFee  = patents.reduce((s,r)=>s+(+r.app_fee||0),0);
+  const totalOth  = patents.reduce((s,r)=>s+(+r.other_cost||0),0);
+  const totalProfit = totalRev-totalFee-totalOth;
+
+  const maxP = Math.max(...patents.map(r=>Math.abs(profit(r))),1);
+  const maxR = Math.max(...patents.map(r=>+r.service_fee||0),1);
+
+  const clientMap = {};
+  patents.forEach(r=>{ clientMap[r.client]=(clientMap[r.client]||0)+(+r.service_fee||0); });
+  const clients = Object.entries(clientMap).sort((a,b)=>b[1]-a[1]);
+  const maxC = clients[0]?clients[0][1]:1;
+
+  const Bar = ({label,val,max,color,prefix="NT$"}) => <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+    <div style={{width:130,fontSize:13,color:"#374151",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flexShrink:0}} title={label}>{label}</div>
+    <div style={{flex:1,height:20,background:"#F3F4F6",borderRadius:4,overflow:"hidden"}}>
+      <div style={{width:`${Math.round(Math.abs(val)/max*100)}%`,height:"100%",background:color,borderRadius:4,minWidth:val?4:0}}/>
+    </div>
+    <div style={{width:100,textAlign:"right",fontSize:13,fontWeight:600,color,flexShrink:0}}>{prefix}{fmt(val)}</div>
+  </div>;
+
+  return <div>
+    <h2 style={{margin:"0 0 18px",fontSize:17,fontWeight:700,color:"#111827"}}>📊 利潤分析</h2>
+
+    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,marginBottom:20}}>
+      {[
+        {label:"服務費收入",value:`NT$${fmt(totalRev)}`,accent:"#2563EB",icon:"💰"},
+        {label:"申請規費合計",value:`NT$${fmt(totalFee)}`,accent:"#F59E0B",icon:"📋"},
+        {label:"其他成本合計",value:`NT$${fmt(totalOth)}`,accent:"#6B7280",icon:"📌"},
+        {label:"累計淨利潤",value:`NT$${fmt(totalProfit)}`,accent:totalProfit>=0?"#10B981":"#EF4444",icon:"💹"},
+      ].map(c=><KpiCard key={c.label} {...c}/>)}
+    </div>
+
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
+      <Card style={{padding:20}}>
+        <div style={{fontWeight:700,color:"#111827",fontSize:14,marginBottom:14}}>各案件利潤</div>
+        {patents.map(r=>{const p=profit(r); return <Bar key={r.id} label={r.name} val={p} max={maxP} color={p>=0?"#15803D":"#B91C1C"}/>;})}
+      </Card>
+      <Card style={{padding:20}}>
+        <div style={{fontWeight:700,color:"#111827",fontSize:14,marginBottom:14}}>客戶服務費排行</div>
+        {clients.map(([name,val])=><Bar key={name} label={name} val={val} max={maxC} color="#2563EB"/>)}
+      </Card>
+    </div>
+
+    <Card style={{padding:20}}>
+      <div style={{fontWeight:700,color:"#111827",fontSize:14,marginBottom:14}}>各案件費用結構比較</div>
+      {patents.map(r=>{
+        const mx = Math.max(+r.service_fee||0,1);
+        return <div key={r.id} style={{marginBottom:16}}>
+          <div style={{fontSize:13,fontWeight:600,color:"#374151",marginBottom:6}}>{r.name} <span style={{color:"#9CA3AF",fontWeight:400}}>— {r.client}</span></div>
+          <Bar label="服務費" val={+r.service_fee||0} max={mx} color="#2563EB"/>
+          <Bar label="申請規費" val={+r.app_fee||0} max={mx} color="#F59E0B"/>
+          <Bar label="其他成本" val={+r.other_cost||0} max={mx} color="#6B7280"/>
+        </div>;
+      })}
+    </Card>
+  </div>;
+}
+
+// ══════════════════════════════════════════════════════════
+// 進度時間軸
+// ══════════════════════════════════════════════════════════
+function TimelineTab({patents}){
+  const [selId,setSelId] = useState(patents[0]?.id||"");
+  const r = patents.find(x=>x.id===selId);
+  const now = new Date();
+
+  const events = useMemo(()=>{
+    if(!r) return [];
+    const ev = [];
+    if(r.app_date) ev.push({date:r.app_date,label:"提出申請",sub:`${r.type}專利申請，案件送件`,status:"done"});
+    ev.push({date:r.app_date,label:"形式審查",sub:"智慧財產局受理，形式審查",status:r.app_date?"done":"pending"});
+    if(r.type==="發明"){
+      const pubDate = r.app_date ? addMonths(r.app_date,18) : "";
+      ev.push({date:pubDate,label:"申請案公開",sub:"發明申請18個月後公開",status:pubDate&&new Date(pubDate)<now?"done":"pending"});
+      const examDate = r.app_date ? addMonths(r.app_date,6) : "";
+      ev.push({date:examDate,label:"申請實體審查",sub:"請求實體審查（3年內提出）",status:examDate&&new Date(examDate)<now?r.status==="實體審查中"?"active":"done":"active"});
+    }
+    if(r.approve_date) ev.push({date:r.approve_date,label:"核准公告",sub:"取得專利權，開始計算保護期",status:"done"});
+    else ev.push({date:"",label:"核准公告",sub:"審查中，預計核准後公告",status:"pending"});
+    if(r.maint_date) ev.push({date:r.maint_date,label:"維護費繳納",sub:`NT$${fmt(r.maint_fee)} ${r.maint_note?"· "+r.maint_note:""}`,status:new Date(r.maint_date)<now?"done":"active"});
+    const base = r.approve_date||r.app_date;
+    const years = r.type==="發明"?20:10;
+    if(base) ev.push({date:addYears(base,years),label:`專利到期`,sub:`${r.type}專利保護期${years}年`,status:"pending"});
+    return ev.sort((a,b)=>{ if(!a.date)return 1; if(!b.date)return -1; return new Date(a.date)-new Date(b.date); });
+  },[r,now]);
+
+  const dotColor = s => s==="done"?"#10B981":s==="active"?"#2563EB":"#D1D5DB";
+
+  return <div>
+    <h2 style={{margin:"0 0 18px",fontSize:17,fontWeight:700,color:"#111827"}}>📅 進度時間軸</h2>
+    <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:20}}>
+      <label style={{fontSize:13,color:"#6B7280",fontWeight:500}}>選擇案件</label>
+      <select value={selId} onChange={e=>setSelId(e.target.value)} style={{...inp,width:300,padding:"7px 12px",fontSize:13}}>
+        {patents.map(p=><option key={p.id} value={p.id}>{p.name} — {p.client}</option>)}
+      </select>
+    </div>
+
+    {r && <Card style={{padding:28}}>
+      <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:20}}>
+        <TypeBadge type={r.type}/>
+        <StatusBadge status={r.status}/>
+        <span style={{fontWeight:700,fontSize:15,color:"#111827"}}>{r.name}</span>
+        <span style={{fontSize:13,color:"#9CA3AF"}}>· {r.client}</span>
+      </div>
+      <div style={{position:"relative",paddingLeft:32}}>
+        <div style={{position:"absolute",left:8,top:8,bottom:0,width:2,background:"#E5E7EB"}}/>
+        {events.map((e,i)=><div key={i} style={{position:"relative",marginBottom:24}}>
+          <div style={{position:"absolute",left:-28,top:2,width:14,height:14,borderRadius:7,background:dotColor(e.status),border:`3px solid ${dotColor(e.status)==="#D1D5DB"?"#E5E7EB":dotColor(e.status)}`,boxSizing:"border-box"}}/>
+          <div style={{fontSize:11,color:"#9CA3AF",marginBottom:2}}>{e.date||"日期待定"}</div>
+          <div style={{fontSize:14,fontWeight:700,color:e.status==="pending"?"#9CA3AF":"#111827"}}>{e.label}</div>
+          <div style={{fontSize:12,color:"#6B7280",marginTop:2}}>{e.sub}</div>
+        </div>)}
+      </div>
+    </Card>}
+
+    {!r && <Empty icon="📅" msg="請選擇一個案件以檢視進度時間軸"/>}
+  </div>;
+}
+
+// ══════════════════════════════════════════════════════════
+// 總覽 Dashboard
+// ══════════════════════════════════════════════════════════
+function Dashboard({patents}){
+  const now = new Date();
+  const active  = patents.filter(r=>["申請中","實體審查中","維護中"].includes(r.status)).length;
+  const approved= patents.filter(r=>r.status==="已核准"||r.status==="維護中").length;
+  const totalRev= patents.reduce((s,r)=>s+(+r.service_fee||0),0);
+  const totalP  = patents.reduce((s,r)=>s+profit(r),0);
+  const urgent  = patents.filter(r=>{ if(!r.maint_date)return false; const d=(new Date(r.maint_date)-now)/86400000; return d>=0&&d<=90; });
+
+  return <div>
+    <h2 style={{margin:"0 0 18px",fontSize:17,fontWeight:700,color:"#111827"}}>📊 總覽</h2>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,marginBottom:20}}>
+      {[
+        {label:"總案件數",value:`${patents.length} 件`,accent:"#2563EB",icon:"📋",sub:"所有專利案"},
+        {label:"進行中案件",value:`${active} 件`,accent:"#7C3AED",icon:"⚙️",sub:"申請中＋審查中＋維護中"},
+        {label:"已核准案件",value:`${approved} 件`,accent:"#10B981",icon:"✅",sub:"含維護中"},
+        {label:"服務費收入",value:`NT$${fmt(totalRev)}`,accent:"#F59E0B",icon:"💰",sub:"累計"},
+      ].map(c=><KpiCard key={c.label} {...c}/>)}
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:14,marginBottom:20}}>
+      {[
+        {label:"累計淨利潤",value:`NT$${fmt(totalP)}`,accent:totalP>=0?"#10B981":"#EF4444",icon:"💹",sub:"服務費扣除所有成本"},
+        {label:"90天內維護",value:`${urgent.length} 件`,accent:urgent.length>0?"#EF4444":"#10B981",icon:"🔔",sub:"需繳納維護費"},
+        {label:"發明專利",value:`${patents.filter(r=>r.type==="發明").length} 件`,accent:"#1D4ED8",icon:"⚗️",sub:`新型 ${patents.filter(r=>r.type==="新型").length} 件`},
+      ].map(c=><KpiCard key={c.label} {...c}/>)}
+    </div>
+    {urgent.length>0 && <div style={{background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:12,padding:"16px 20px",marginBottom:16}}>
+      <div style={{fontWeight:700,color:"#B91C1C",marginBottom:10,fontSize:14}}>⚠️ 近90天維護到期 ({urgent.length} 件)</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:10}}>
+        {urgent.map(r=>{ const d=Math.round((new Date(r.maint_date)-now)/86400000);
+          return <div key={r.id} style={{background:"#fff",borderRadius:8,padding:"10px 14px",border:"1px solid #FECACA"}}>
+            <div style={{fontSize:12,color:"#9CA3AF",marginBottom:2}}>{r.case_no||r.id.slice(0,8)}</div>
+            <div style={{fontWeight:600,fontSize:13,color:"#111827"}}>{r.name}</div>
+            <div style={{fontSize:12,color:"#6B7280"}}>{r.client}</div>
+            <div style={{fontSize:13,fontWeight:700,color:d<=30?"#B91C1C":"#B45309",marginTop:6}}>{d}天後 · NT${fmt(r.maint_fee)}</div>
+          </div>;
+        })}
+      </div>
+    </div>}
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+      <Card style={{padding:20}}>
+        <div style={{fontWeight:700,color:"#111827",fontSize:14,marginBottom:14}}>案件狀態分佈</div>
+        {PATENT_STATUS.map(st=>{ const cnt=patents.filter(r=>r.status===st).length; const pct=patents.length?Math.round(cnt/patents.length*100):0;
+          return <div key={st} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+            <StatusBadge status={st}/>
+            <div style={{flex:1,height:14,background:"#F3F4F6",borderRadius:3,overflow:"hidden"}}>
+              <div style={{width:`${pct}%`,height:"100%",background:(SCOL[st]?.tx||"#9CA3AF"),borderRadius:3,opacity:0.7,minWidth:cnt?4:0}}/>
+            </div>
+            <span style={{fontSize:12,color:"#6B7280",width:30,textAlign:"right"}}>{cnt}</span>
+          </div>;
+        })}
+      </Card>
+      <Card style={{padding:20}}>
+        <div style={{fontWeight:700,color:"#111827",fontSize:14,marginBottom:14}}>最新案件</div>
+        {patents.slice(0,5).map(r=><div key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:"1px solid #F9FAFB"}}>
+          <div>
+            <div style={{fontSize:13,fontWeight:600,color:"#111827"}}>{r.name}</div>
+            <div style={{fontSize:11,color:"#9CA3AF"}}>{r.client} · {r.app_date||"—"}</div>
+          </div>
+          <StatusBadge status={r.status}/>
+        </div>)}
+        {!patents.length && <Empty icon="📋" msg="尚無案件"/>}
+      </Card>
+    </div>
+  </div>;
+}
+
+// ══════════════════════════════════════════════════════════
+// 主 App
+// ══════════════════════════════════════════════════════════
+const ALL_TABS = [
+  {id:"dashboard",label:"📊 總覽",      roles:["admin","attorney","viewer"]},
+  {id:"patents",  label:"📋 申請案件",  roles:["admin","attorney","viewer"]},
+  {id:"maint",    label:"🔔 維護追蹤",  roles:["admin","attorney","viewer"]},
+  {id:"analysis", label:"💹 利潤分析",  roles:["admin","attorney"]},
+  {id:"timeline", label:"📅 時間軸",    roles:["admin","attorney","viewer"]},
+  {id:"users",    label:"👤 帳號管理",  roles:["admin"]},
+];
+
+function App(){
+  const [user,setUser]       = useState(null);
+  const [patents,setPatents] = useState([]);
+  const [tab,setTab]         = useState("dashboard");
+  const [loading,setLoading] = useState(false);
+
+  useEffect(()=>{
+    if(user){ setLoading(true); loadPatents().then(p=>{setPatents(p);setLoading(false);}); }
+  },[user]);
+
+  if(!user) return <LoginPage onLogin={u=>{setUser(u);setTab("dashboard");}}/>;
+  const tabs = ALL_TABS.filter(t=>t.roles.includes(user.role));
+
+  return <div style={{minHeight:"100vh",background:"#F1F5F9"}}>
+    {/* Header */}
+    <div style={{background:"#fff",borderBottom:"1px solid #E5E7EB",paddingLeft:24,paddingRight:24,position:"sticky",top:0,zIndex:100}}>
+      <div style={{maxWidth:1400,margin:"0 auto"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",height:56}}>
+          <div style={{display:"flex",alignItems:"center",gap:12}}>
+            <div style={{width:36,height:36,background:"linear-gradient(135deg,#1D4ED8,#059669)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>⚖️</div>
+            <div>
+              <div style={{fontWeight:800,fontSize:15,color:"#111827",letterSpacing:-0.5}}>智權技術顧問</div>
+              <div style={{fontSize:10,color:"#9CA3AF",letterSpacing:0.5}}>IP Management System v1.0</div>
+            </div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <RoleBadge role={user.role}/>
+            <span style={{fontSize:13,color:"#374151",fontWeight:500}}>{user.name}</span>
+            <button onClick={()=>setUser(null)} style={{fontSize:12,color:"#EF4444",background:"none",border:"1px solid #FECACA",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontWeight:600}}>登出</button>
+          </div>
+        </div>
+        {/* Nav */}
+        <div style={{display:"flex",gap:0,overflowX:"auto"}}>
+          {tabs.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{padding:"10px 16px",fontSize:13,fontWeight:tab===t.id?700:500,color:tab===t.id?"#1D4ED8":"#6B7280",background:"none",border:"none",borderBottom:tab===t.id?"2.5px solid #1D4ED8":"2.5px solid transparent",cursor:"pointer",whiteSpace:"nowrap"}}>{t.label}</button>)}
+        </div>
+      </div>
+    </div>
+
+    {/* Content */}
+    <div style={{maxWidth:1400,margin:"0 auto",padding:"24px 24px"}}>
+      {loading ? <div style={{textAlign:"center",padding:60,color:"#9CA3AF",fontSize:14}}>⏳ 載入案件資料中…</div> : <>
+        {tab==="dashboard" && <Dashboard patents={patents}/>}
+        {tab==="patents"   && <PatentsTab patents={patents} setPatents={setPatents} role={user.role}/>}
+        {tab==="maint"     && <MaintTab patents={patents}/>}
+        {tab==="analysis"  && <AnalysisTab patents={patents}/>}
+        {tab==="timeline"  && <TimelineTab patents={patents}/>}
+        {tab==="users"     && user.role==="admin" && <UsersTab currentUser={user}/>}
+      </>}
+    </div>
+  </div>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
