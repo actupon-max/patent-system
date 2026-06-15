@@ -177,12 +177,14 @@ function LoginPage({onLogin}){
       <div style={{marginBottom:14}}>
         <label style={{display:"block",fontSize:13,fontWeight:600,color:"#374151",marginBottom:6}}>電子信箱</label>
         <input style={inp} type="email" value={email} placeholder="your@email.com"
+          autoCapitalize="none" autoCorrect="off" autoComplete="email" spellCheck={false}
           onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handle()}/>
       </div>
       <div style={{marginBottom:20}}>
         <label style={{display:"block",fontSize:13,fontWeight:600,color:"#374151",marginBottom:6}}>密碼</label>
         <div style={{position:"relative"}}>
           <input style={{...inp,paddingRight:40}} type={showPw?"text":"password"} value={pw} placeholder="••••••••"
+            autoCapitalize="none" autoCorrect="off" autoComplete="current-password" spellCheck={false}
             onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handle()}/>
           <button onClick={()=>setShowPw(x=>!x)} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:"#9CA3AF",fontSize:15}}>{showPw?"🙈":"👁️"}</button>
         </div>
@@ -284,10 +286,11 @@ function UserForm({initial,currentUser,onSave,onClose}){
   return <>
     <FormGrid>
       <Field label="姓名 *" half><input style={inp} value={f.name} onChange={e=>s("name",e.target.value)} placeholder="例：陳志遠"/></Field>
-      <Field label="電子信箱 *" half><input style={inp} type="email" value={f.email} onChange={e=>s("email",e.target.value)} placeholder="chen@ipfirm.com" disabled={!!initial}/></Field>
+      <Field label="電子信箱 *" half><input style={inp} type="email" value={f.email} onChange={e=>s("email",e.target.value)} placeholder="chen@ipfirm.com" disabled={!!initial} autoCapitalize="none" autoCorrect="off" autoComplete="email" spellCheck={false}/></Field>
       <Field label={initial?"新密碼（留空保持不變）":"密碼 *"} half>
         <div style={{position:"relative"}}>
-          <input style={{...inp,paddingRight:40}} type={showPw?"text":"password"} value={f.password} onChange={e=>s("password",e.target.value)} placeholder={initial?"輸入新密碼才會變更":"至少 6 個字元"}/>
+          <input style={{...inp,paddingRight:40}} type={showPw?"text":"password"} value={f.password} onChange={e=>s("password",e.target.value)} placeholder={initial?"輸入新密碼才會變更":"至少 6 個字元"}
+            autoCapitalize="none" autoCorrect="off" autoComplete="new-password" spellCheck={false}/>
           <button onClick={()=>setShowPw(x=>!x)} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:"#9CA3AF"}}>{showPw?"🙈":"👁️"}</button>
         </div>
       </Field>
