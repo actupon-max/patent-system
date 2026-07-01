@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
-<title>佳富智權技術顧問 — 專利申請管理系統</title>
+<title>智權技術顧問 — 專利申請管理系統</title>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
@@ -28,8 +28,8 @@ const{useState,useEffect,useMemo,useCallback}=React;
 
 // ── Supabase 設定 ────────────────────────────────────────
 // !! 部署前請替換成你自己的 Supabase URL 和 Key !!
-const SB_URL = "https://fcqjdkndpywbynrkfmur.supabase.co";
-const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZjcWpka25kcHl3YnlucmtmbXVyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1NDQ4OTcsImV4cCI6MjA5NzEyMDg5N30.rXAn6qoin2qttMptlcwELEtB2lv-EptpDusEnR4lqMg";
+const SB_URL = "https://YOUR_PROJECT.supabase.co";
+const SB_KEY = "YOUR_ANON_KEY";
 
 const sbFetch = async (path, opts={}) => {
   const res = await fetch(`${SB_URL}/rest/v1/${path}`, {
@@ -46,18 +46,48 @@ const sbFetch = async (path, opts={}) => {
   return res.status === 204 ? null : res.json();
 };
 
+// ── 密碼雜湊（Web Crypto API — SHA-256，無需外部套件）────────
+// 格式：sha256:<hex digest>
+const hashPassword = async (plain) => {
+  const encoded = new TextEncoder().encode(plain.trim());
+  const buf     = await crypto.subtle.digest("SHA-256", encoded);
+  const hex     = Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+  return `sha256:${hex}`;
+};
+
+const verifyPassword = async (plain, stored) => {
+  // 相容舊明文密碼（第一次登入後自動升級）
+  if (!stored.startsWith("sha256:")) return plain.trim() === stored;
+  const hashed = await hashPassword(plain);
+  return hashed === stored;
+};
+
 // ── 帳號 API ──────────────────────────────────────────────
 const loginUser = async (email, password) => {
   const rows = await sbFetch(`patent_users?email=eq.${encodeURIComponent(email.trim().toLowerCase())}&select=*`);
   if (!rows || rows.length === 0) return null;
   const u = rows[0];
-  if (u.password !== password.trim() || u.active === false) return null;
+  if (u.active === false) return null;
+  const ok = await verifyPassword(password, u.password);
+  if (!ok) return null;
+  // 若舊帳號仍為明文，自動升級為雜湊
+  if (!u.password.startsWith("sha256:")) {
+    const hashed = await hashPassword(password);
+    await sbFetch(`patent_users?id=eq.${u.id}`, {method:"PATCH", body:JSON.stringify({password:hashed})});
+  }
   return u;
 };
 const loadUsers  = async () => { try { return await sbFetch("patent_users?select=*&order=created_at.asc"); } catch { return []; } };
-const saveUser   = async (u, isNew) => isNew
-  ? sbFetch("patent_users", {method:"POST", body:JSON.stringify(u)})
-  : sbFetch(`patent_users?id=eq.${u.id}`, {method:"PATCH", body:JSON.stringify(u)});
+const saveUser   = async (u, isNew) => {
+  // 儲存前將密碼雜湊（只有當密碼欄位非空且非雜湊格式時才雜湊）
+  const payload = {...u};
+  if (payload.password && !payload.password.startsWith("sha256:")) {
+    payload.password = await hashPassword(payload.password);
+  }
+  return isNew
+    ? sbFetch("patent_users", {method:"POST", body:JSON.stringify(payload)})
+    : sbFetch(`patent_users?id=eq.${u.id}`, {method:"PATCH", body:JSON.stringify(payload)});
+};
 const deleteUser = async (id) => sbFetch(`patent_users?id=eq.${id}`, {method:"DELETE"});
 
 // ── 專利案件 API ──────────────────────────────────────────
@@ -169,22 +199,20 @@ function LoginPage({onLogin}){
     <div style={{background:"#fff",borderRadius:20,padding:"48px 40px",width:"100%",maxWidth:420,boxShadow:"0 8px 40px rgba(0,0,0,0.10)"}}>
       <div style={{textAlign:"center",marginBottom:36}}>
         <div style={{width:60,height:60,margin:"0 auto 16px",background:"linear-gradient(135deg,#1D4ED8,#059669)",borderRadius:18,display:"flex",alignItems:"center",justifyContent:"center",fontSize:30}}>⚖️</div>
-        <div style={{fontWeight:800,fontSize:20,color:"#111827",letterSpacing:-0.5}}>佳富智權技術顧問</div>
+        <div style={{fontWeight:800,fontSize:20,color:"#111827",letterSpacing:-0.5}}>智權技術顧問</div>
         <div style={{fontSize:13,color:"#6B7280",marginTop:4}}>專利申請管理系統</div>
-        <div style={{fontSize:11,color:"#9CA3AF",marginTop:2,letterSpacing:1}}>Chiaful Patent Management System</div>
+        <div style={{fontSize:11,color:"#9CA3AF",marginTop:2,letterSpacing:1}}>IP Management System</div>
       </div>
 
       <div style={{marginBottom:14}}>
         <label style={{display:"block",fontSize:13,fontWeight:600,color:"#374151",marginBottom:6}}>電子信箱</label>
         <input style={inp} type="email" value={email} placeholder="your@email.com"
-          autoCapitalize="none" autoCorrect="off" autoComplete="email" spellCheck={false}
           onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handle()}/>
       </div>
       <div style={{marginBottom:20}}>
         <label style={{display:"block",fontSize:13,fontWeight:600,color:"#374151",marginBottom:6}}>密碼</label>
         <div style={{position:"relative"}}>
           <input style={{...inp,paddingRight:40}} type={showPw?"text":"password"} value={pw} placeholder="••••••••"
-            autoCapitalize="none" autoCorrect="off" autoComplete="current-password" spellCheck={false}
             onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handle()}/>
           <button onClick={()=>setShowPw(x=>!x)} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:"#9CA3AF",fontSize:15}}>{showPw?"🙈":"👁️"}</button>
         </div>
@@ -286,11 +314,10 @@ function UserForm({initial,currentUser,onSave,onClose}){
   return <>
     <FormGrid>
       <Field label="姓名 *" half><input style={inp} value={f.name} onChange={e=>s("name",e.target.value)} placeholder="例：陳志遠"/></Field>
-      <Field label="電子信箱 *" half><input style={inp} type="email" value={f.email} onChange={e=>s("email",e.target.value)} placeholder="chen@ipfirm.com" disabled={!!initial} autoCapitalize="none" autoCorrect="off" autoComplete="email" spellCheck={false}/></Field>
+      <Field label="電子信箱 *" half><input style={inp} type="email" value={f.email} onChange={e=>s("email",e.target.value)} placeholder="chen@ipfirm.com" disabled={!!initial}/></Field>
       <Field label={initial?"新密碼（留空保持不變）":"密碼 *"} half>
         <div style={{position:"relative"}}>
-          <input style={{...inp,paddingRight:40}} type={showPw?"text":"password"} value={f.password} onChange={e=>s("password",e.target.value)} placeholder={initial?"輸入新密碼才會變更":"至少 6 個字元"}
-            autoCapitalize="none" autoCorrect="off" autoComplete="new-password" spellCheck={false}/>
+          <input style={{...inp,paddingRight:40}} type={showPw?"text":"password"} value={f.password} onChange={e=>s("password",e.target.value)} placeholder={initial?"輸入新密碼才會變更":"至少 6 個字元"}/>
           <button onClick={()=>setShowPw(x=>!x)} style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:"#9CA3AF"}}>{showPw?"🙈":"👁️"}</button>
         </div>
       </Field>
@@ -805,8 +832,8 @@ function App(){
           <div style={{display:"flex",alignItems:"center",gap:12}}>
             <div style={{width:36,height:36,background:"linear-gradient(135deg,#1D4ED8,#059669)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>⚖️</div>
             <div>
-              <div style={{fontWeight:800,fontSize:15,color:"#111827",letterSpacing:-0.5}}>佳富智權技術顧問</div>
-              <div style={{fontSize:10,color:"#9CA3AF",letterSpacing:0.5}}>Chiaful Patent Management System v1.0</div>
+              <div style={{fontWeight:800,fontSize:15,color:"#111827",letterSpacing:-0.5}}>智權技術顧問</div>
+              <div style={{fontSize:10,color:"#9CA3AF",letterSpacing:0.5}}>IP Management System v1.0</div>
             </div>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
