@@ -1,0 +1,46 @@
+name: Keep Supabase Awake
+
+on:
+  schedule:
+    # 每天 Taiwan 08:00 (UTC 00:00) 執行一次
+    - cron: '0 0 * * *'
+  workflow_dispatch:   # 允許手動觸發（測試用）
+
+jobs:
+  ping:
+    name: Ping Supabase DB
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Ping patent_users table
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/patent_users?select=id&limit=1" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}")
+
+          echo "HTTP Status: $STATUS"
+
+          if [ "$STATUS" = "200" ]; then
+            echo "✅ Supabase is awake and responding."
+          else
+            echo "⚠️ Unexpected status: $STATUS"
+            exit 1
+          fi
+
+      - name: Ping patents table
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/patents?select=id&limit=1" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}")
+
+          echo "HTTP Status: $STATUS"
+
+          if [ "$STATUS" = "200" ]; then
+            echo "✅ patents table OK"
+          else
+            echo "⚠️ Unexpected status: $STATUS"
+            exit 1
+          fi
