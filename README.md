@@ -1,4 +1,4 @@
-# 智權技術顧問 — 專利申請管理系統
+# 群淵 GDIP — 專利管理系統
 ## 部署指南（GitHub + Supabase + Vercel）
 
 ---
