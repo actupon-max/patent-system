@@ -163,6 +163,8 @@ const fmt  = n => isNaN(n) ? "0" : new Intl.NumberFormat("zh-TW").format(Math.ro
 const today = () => new Date().toISOString().slice(0,10);
 const addMonths = (d,m) => { const dt=new Date(d); dt.setMonth(dt.getMonth()+m); return dt.toISOString().slice(0,10); };
 const addYears  = (d,y) => { const dt=new Date(d); dt.setFullYear(dt.getFullYear()+y); return dt.toISOString().slice(0,10); };
+// 金額（服務費／規費／成本／利潤）可見性：管理員一律可見，其餘看帳號開關 can_see_analysis
+const canSeeMoney = u => !!u && (u.role === "admin" || !!u.can_see_analysis);
 const COST_PRESETS = ["翻譯費","外國事務所代理費","圖式繪製費","檢索費","公證／認證費","年費代繳","郵電費","影印／文件費","其他"];
 // 其他成本合計：有明細就用明細加總，沒有就退回舊的單一數字欄位（相容既有資料）
 const otherSum = r => (Array.isArray(r.other_costs) && r.other_costs.length)
@@ -415,7 +417,7 @@ function UsersTab({currentUser}){
     <Card>
       <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
         <thead><tr style={{background:"#F9FAFB"}}>
-          {["姓名","信箱","角色","狀態","利潤分析","建立日期","操作"].map(h=><th key={h} style={{padding:"11px 16px",textAlign:"left",fontWeight:600,color:"#6B7280",fontSize:12,borderBottom:"1px solid #F3F4F6"}}>{h}</th>)}
+          {["姓名","信箱","角色","狀態","金額權限","建立日期","操作"].map(h=><th key={h} style={{padding:"11px 16px",textAlign:"left",fontWeight:600,color:"#6B7280",fontSize:12,borderBottom:"1px solid #F3F4F6"}}>{h}</th>)}
         </tr></thead>
         <tbody>
           {users.map(u=><tr key={u.id} style={{borderBottom:"1px solid #F9FAFB"}}>
@@ -429,7 +431,7 @@ function UsersTab({currentUser}){
             </td>
             <td style={{padding:"12px 16px"}}>
               <span style={{background:u.can_see_analysis?"#EFF6FF":"#F3F4F6",color:u.can_see_analysis?"#2563EB":"#9CA3AF",borderRadius:6,padding:"2px 8px",fontSize:12,fontWeight:600}}>
-                {u.can_see_analysis?"✅ 開放":"🔒 隱藏"}
+                {(u.role==="admin"||u.can_see_analysis)?"✅ 開放":"🔒 隱藏"}
               </span>
             </td>
             <td style={{padding:"12px 16px",color:"#9CA3AF",fontSize:12}}>{u.created_at?.slice(0,10)||"—"}</td>
@@ -490,12 +492,12 @@ function UserForm({initial,currentUser,onSave,onClose}){
           <option value="inactive">🔴 停用</option>
         </select>
       </Field>}
-      <Field label="💹 利潤分析頁面" full>
+      <Field label="💰 金額與利潤權限" full>
         <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",userSelect:"none"}}>
           <div onClick={()=>s("can_see_analysis",!f.can_see_analysis)} style={{width:44,height:24,borderRadius:12,background:f.can_see_analysis?"#2563EB":"#D1D5DB",position:"relative",transition:"background 0.2s",flexShrink:0}}>
             <div style={{position:"absolute",top:3,left:f.can_see_analysis?23:3,width:18,height:18,borderRadius:9,background:"#fff",boxShadow:"0 1px 3px rgba(0,0,0,0.2)",transition:"left 0.2s"}}/>
           </div>
-          <span style={{fontSize:13,color:"#374151"}}>{f.can_see_analysis ? "✅ 此帳號可查看利潤分析" : "🔒 隱藏（此帳號看不到利潤分析）"}</span>
+          <span style={{fontSize:13,color:"#374151"}}>{f.can_see_analysis ? "✅ 可看到服務費、成本、利潤與利潤分析頁" : "🔒 看不到任何金額（總覽、案件清單、案件詳情、CSV 皆隱藏）"}</span>
         </label>
       </Field>
     </FormGrid>
@@ -506,7 +508,7 @@ function UserForm({initial,currentUser,onSave,onClose}){
 // ══════════════════════════════════════════════════════════
 // 專利案件表單
 // ══════════════════════════════════════════════════════════
-function PatentForm({initial,onSave,onClose}){
+function PatentForm({initial,onSave,onClose,money=true}){
   const blank = {
     case_no:"", name:"", type:"新型", client:"",
     country:"TW", group_key:"",
@@ -571,7 +573,7 @@ function PatentForm({initial,onSave,onClose}){
       </Field>
     </FormGrid>
 
-    <div style={{fontWeight:600,fontSize:13,color:"#374151",margin:"8px 0 12px",paddingTop:8,borderTop:"1px solid #F3F4F6"}}>費用結構</div>
+    {money && <><div style={{fontWeight:600,fontSize:13,color:"#374151",margin:"8px 0 12px",paddingTop:8,borderTop:"1px solid #F3F4F6"}}>費用結構</div>
     <FormGrid>
       <Field label="服務費 (NTD)" half><input style={inp} type="number" min="0" placeholder="未填" value={f.service_fee??""} onChange={e=>s("service_fee",e.target.value)}/></Field>
       <Field label="申請規費 (NTD)｜代收代付，不計入淨利潤" half><input style={inp} type="number" min="0" placeholder="未填" value={f.app_fee??""} onChange={e=>s("app_fee",e.target.value)}/></Field>
@@ -607,12 +609,12 @@ function PatentForm({initial,onSave,onClose}){
           NT$ {fmt(profit(f))}
         </div>
       </Field>
-    </FormGrid>
+    </FormGrid></>}
 
     <div style={{fontWeight:600,fontSize:13,color:"#374151",margin:"8px 0 12px",paddingTop:8,borderTop:"1px solid #F3F4F6"}}>維護資訊</div>
     <FormGrid>
       <Field label="下次維護費繳納日" half><input style={inp} type="date" value={f.maint_date} onChange={e=>s("maint_date",e.target.value)}/></Field>
-      <Field label="維護費用 (NTD)" half><input style={inp} type="number" min="0" placeholder="未填" value={f.maint_fee??""} onChange={e=>s("maint_fee",e.target.value)}/></Field>
+      {money && <Field label="維護費用 (NTD)" half><input style={inp} type="number" min="0" placeholder="未填" value={f.maint_fee??""} onChange={e=>s("maint_fee",e.target.value)}/></Field>}
       <Field label="維護備註"><input style={inp} value={f.maint_note} onChange={e=>s("maint_note",e.target.value)} placeholder="例：第3年年費、需提早60天繳納"/></Field>
     </FormGrid>
 
@@ -632,7 +634,7 @@ function FileBadge({patentId}){
   return <span style={{background:"#EFF6FF",color:"#2563EB",borderRadius:10,padding:"1px 6px",fontSize:10,fontWeight:700,marginLeft:4}}>📎{cnt}</span>;
 }
 
-function PatentsTab({patents,setPatents,role}){
+function PatentsTab({patents,setPatents,role,money=true}){
   const canEdit = role !== "viewer";
   const [search,setSearch]   = useState("");
   const [fType,setFType]     = useState("");
@@ -715,8 +717,8 @@ function PatentsTab({patents,setPatents,role}){
   };
 
   const exportCsv = () => {
-    const headers = ["案件編號","案件名稱","類型","客戶","申請國家","群組代碼","申請日期","核准日期","狀態","服務費","申請規費(代收代付)","其他成本合計","其他成本明細","淨利潤","維護日期","維護費","維護備註"];
-    const rows = patents.map(r=>[r.case_no||"",r.name,r.type,r.client,r.country||"TW",r.group_key||"",r.app_date||"",r.approve_date||"",r.status,r.service_fee||0,r.app_fee||0,otherSum(r),costLabel(r),profit(r),r.maint_date||"",r.maint_fee||0,r.maint_note||""]);
+    const headers = ["案件編號","案件名稱","類型","客戶","申請國家","群組代碼","申請日期","核准日期","狀態",...(money?["服務費","申請規費(代收代付)","其他成本合計","其他成本明細","淨利潤"]:[]),"維護日期",...(money?["維護費"]:[]),"維護備註"];
+    const rows = patents.map(r=>[r.case_no||"",r.name,r.type,r.client,r.country||"TW",r.group_key||"",r.app_date||"",r.approve_date||"",r.status,...(money?[r.service_fee||0,r.app_fee||0,otherSum(r),costLabel(r),profit(r)]:[]),r.maint_date||"",...(money?[r.maint_fee||0]:[]),r.maint_note||""]);
     dlCSV(`專利案件_${today()}.csv`, toCSV(headers,rows));
   };
 
@@ -735,8 +737,8 @@ function PatentsTab({patents,setPatents,role}){
       <td style={{padding:"10px 14px"}}><CountryBadge country={r.country||"TW"}/></td>
       <td style={{padding:"10px 14px",color:"#374151",fontSize:12}}>{r.client}</td>
       <td style={{padding:"10px 14px",color:"#6B7280",whiteSpace:"nowrap",fontSize:12}}>{r.app_date||"—"}</td>
-      <td style={{padding:"10px 14px",color:"#374151",fontSize:12}}>NT${fmt(r.service_fee)}</td>
-      <td style={{padding:"10px 14px",fontWeight:700,color:p>=0?"#15803D":"#B91C1C",fontSize:12}}>NT${fmt(p)}</td>
+      {money && <td style={{padding:"10px 14px",color:"#374151",fontSize:12}}>NT${fmt(r.service_fee)}</td>}
+      {money && <td style={{padding:"10px 14px",fontWeight:700,color:p>=0?"#15803D":"#B91C1C",fontSize:12}}>NT${fmt(p)}</td>}
       <td style={{padding:"10px 14px"}}><StatusBadge status={r.status}/></td>
       <td style={{padding:"10px 14px",whiteSpace:"nowrap"}}>
         <button onClick={()=>setDetail(r)} style={{background:"none",border:"none",color:"#2563EB",cursor:"pointer",fontSize:12,marginRight:6}}>查看</button>
@@ -764,8 +766,8 @@ function PatentsTab({patents,setPatents,role}){
         <td style={{padding:"10px 14px",fontSize:12,color:"#374151"}}>{flags}</td>
         <td style={{padding:"10px 14px",color:"#374151",fontSize:12}}>{rep.client}</td>
         <td style={{padding:"10px 14px",color:"#6B7280",whiteSpace:"nowrap",fontSize:12}}>{rep.app_date||"—"}</td>
-        <td style={{padding:"10px 14px",color:"#374151",fontSize:12}}>NT${fmt(totalFee)}</td>
-        <td style={{padding:"10px 14px",fontWeight:700,color:totalPft>=0?"#15803D":"#B91C1C",fontSize:12}}>NT${fmt(totalPft)}</td>
+        {money && <td style={{padding:"10px 14px",color:"#374151",fontSize:12}}>NT${fmt(totalFee)}</td>}
+        {money && <td style={{padding:"10px 14px",fontWeight:700,color:totalPft>=0?"#15803D":"#B91C1C",fontSize:12}}>NT${fmt(totalPft)}</td>}
         <td style={{padding:"10px 14px"}}><StatusBadge status={rep.status}/></td>
         <td style={{padding:"10px 14px",fontSize:12,color:"#6B7280"}}>{open?"▲ 收合":"▼ 展開"}</td>
       </tr>
@@ -796,7 +798,7 @@ function PatentsTab({patents,setPatents,role}){
     <Card>
       <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
         <thead><tr style={{background:"#F9FAFB"}}>
-          {["案件名稱","類型","國家","客戶","申請日","服務費","利潤","狀態","操作"].map(h=><th key={h} style={{padding:"10px 14px",textAlign:"left",fontWeight:600,color:"#6B7280",fontSize:12,borderBottom:"1px solid #F3F4F6",whiteSpace:"nowrap"}}>{h}</th>)}
+          {["案件名稱","類型","國家","客戶","申請日",...(money?["服務費","利潤"]:[]),"狀態","操作"].map(h=><th key={h} style={{padding:"10px 14px",textAlign:"left",fontWeight:600,color:"#6B7280",fontSize:12,borderBottom:"1px solid #F3F4F6",whiteSpace:"nowrap"}}>{h}</th>)}
         </tr></thead>
         <tbody>
           {groups.map(g=><GroupRow key={g.key} group={g}/>)}
@@ -807,16 +809,16 @@ function PatentsTab({patents,setPatents,role}){
     </Card>
 
     {modal && <Modal title={modal.item?"編輯專利案件":"新增專利案件"} onClose={()=>setModal(null)} wide>
-      <PatentForm initial={modal.item} onSave={handleSave} onClose={()=>setModal(null)}/>
+      <PatentForm initial={modal.item} onSave={handleSave} onClose={()=>setModal(null)} money={money}/>
     </Modal>}
 
     {detail && <Modal title={detail.name} onClose={()=>setDetail(null)} wide>
-      <PatentDetail r={detail} onEdit={()=>{setModal({item:detail});setDetail(null);}} onDelete={()=>handleDelete(detail.id)} canEdit={canEdit}/>
+      <PatentDetail r={detail} onEdit={()=>{setModal({item:detail});setDetail(null);}} onDelete={()=>handleDelete(detail.id)} canEdit={canEdit} money={money}/>
     </Modal>}
   </div>;
 }
 
-function PatentDetail({r,onEdit,onDelete,canEdit}){
+function PatentDetail({r,onEdit,onDelete,canEdit,money=true}){
   const p = profit(r);
   return <div>
     <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
@@ -847,16 +849,16 @@ function PatentDetail({r,onEdit,onDelete,canEdit}){
       <div style={{background:"#F9FAFB",borderRadius:10,padding:14,fontSize:13,color:"#374151",lineHeight:1.7,whiteSpace:"pre-wrap"}}>{r.claim_desc||"—"}</div>
     </div>
 
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:10,marginBottom:16}}>
+    {money && <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:10,marginBottom:16}}>
       {[["服務費",`NT$${fmt(r.service_fee)}`,"#1D4ED8"],["申請規費",`NT$${fmt(r.app_fee)}`,"#B45309"],["其他成本",`NT$${fmt(otherSum(r))}`,"#6B7280"],["淨利潤",`NT$${fmt(p)}`,p>=0?"#15803D":"#B91C1C"]].map(([l,v,c])=>
         <div key={l} style={{background:"#F9FAFB",borderRadius:10,padding:"12px 14px"}}>
           <div style={{fontSize:11,color:"#9CA3AF",marginBottom:4}}>{l}</div>
           <div style={{fontSize:14,fontWeight:700,color:c}}>{v}</div>
         </div>
       )}
-    </div>
+    </div>}
 
-    {Array.isArray(r.other_costs) && r.other_costs.length>0 && <div style={{marginBottom:16}}>
+    {money && Array.isArray(r.other_costs) && r.other_costs.length>0 && <div style={{marginBottom:16}}>
       <div style={{fontSize:12,fontWeight:600,color:"#6B7280",marginBottom:6}}>其他成本明細</div>
       <div style={{background:"#F9FAFB",borderRadius:10,padding:"10px 14px"}}>
         {r.other_costs.map((c,i)=>
@@ -1060,7 +1062,7 @@ function TimelineTab({patents}){
 // ══════════════════════════════════════════════════════════
 // 總覽 Dashboard
 // ══════════════════════════════════════════════════════════
-function Dashboard({patents}){
+function Dashboard({patents,money=true}){
   const now = new Date();
   const active  = patents.filter(r=>["申請中","實體審查中","維護中"].includes(r.status)).length;
   const approved= patents.filter(r=>r.status==="已核准"||r.status==="維護中").length;
@@ -1070,21 +1072,23 @@ function Dashboard({patents}){
 
   return <div>
     <h2 style={{margin:"0 0 18px",fontSize:17,fontWeight:700,color:"#111827"}}>📊 總覽</h2>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,marginBottom:20}}>
-      {[
+    {(()=>{ const row1=[
         {label:"總案件數",value:`${patents.length} 件`,accent:"#2563EB",icon:"📋",sub:"所有專利案"},
         {label:"進行中案件",value:`${active} 件`,accent:"#7C3AED",icon:"⚙️",sub:"申請中＋審查中＋維護中"},
         {label:"已核准案件",value:`${approved} 件`,accent:"#10B981",icon:"✅",sub:"含維護中"},
-        {label:"服務費收入",value:`NT$${fmt(totalRev)}`,accent:"#F59E0B",icon:"💰",sub:"累計"},
-      ].map(c=><KpiCard key={c.label} {...c}/>)}
-    </div>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:14,marginBottom:20}}>
-      {[
-        {label:"累計淨利潤",value:`NT$${fmt(totalP)}`,accent:totalP>=0?"#10B981":"#EF4444",icon:"💹",sub:"服務費扣除其他成本（不含規費）"},
+        ...(money ? [{label:"服務費收入",value:`NT$${fmt(totalRev)}`,accent:"#F59E0B",icon:"💰",sub:"累計"}] : []),
+      ];
+      return <div style={{display:"grid",gridTemplateColumns:`repeat(${row1.length},1fr)`,gap:14,marginBottom:20}}>
+        {row1.map(c=><KpiCard key={c.label} {...c}/>)}
+      </div>; })()}
+    {(()=>{ const row2=[
+        ...(money ? [{label:"累計淨利潤",value:`NT$${fmt(totalP)}`,accent:totalP>=0?"#10B981":"#EF4444",icon:"💹",sub:"服務費扣除其他成本（不含規費）"}] : []),
         {label:"90天內維護",value:`${urgent.length} 件`,accent:urgent.length>0?"#EF4444":"#10B981",icon:"🔔",sub:"需繳納維護費"},
         {label:"發明專利",value:`${patents.filter(r=>r.type==="發明").length} 件`,accent:"#1D4ED8",icon:"⚗️",sub:`新型 ${patents.filter(r=>r.type==="新型").length} 件`},
-      ].map(c=><KpiCard key={c.label} {...c}/>)}
-    </div>
+      ];
+      return <div style={{display:"grid",gridTemplateColumns:`repeat(${row2.length},1fr)`,gap:14,marginBottom:20}}>
+        {row2.map(c=><KpiCard key={c.label} {...c}/>)}
+      </div>; })()}
     {urgent.length>0 && <div style={{background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:12,padding:"16px 20px",marginBottom:16}}>
       <div style={{fontWeight:700,color:"#B91C1C",marginBottom:10,fontSize:14}}>⚠️ 近90天維護到期 ({urgent.length} 件)</div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:10}}>
@@ -1160,7 +1164,7 @@ function App(){
             <div style={{width:36,height:36,background:"linear-gradient(135deg,#1D4ED8,#059669)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>⚖️</div>
             <div>
               <div style={{fontWeight:800,fontSize:15,color:"#111827",letterSpacing:-0.5}}>群淵 GDIP</div>
-              <div style={{fontSize:10,color:"#9CA3AF",letterSpacing:0.5}}>GDIP Patent Management System v1.3.1</div>
+              <div style={{fontSize:10,color:"#9CA3AF",letterSpacing:0.5}}>GDIP Patent Management System v1.3.2</div>
             </div>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -1179,8 +1183,8 @@ function App(){
     {/* Content */}
     <div style={{maxWidth:1400,margin:"0 auto",padding:"24px 24px"}}>
       {loading ? <div style={{textAlign:"center",padding:60,color:"#9CA3AF",fontSize:14}}>⏳ 載入案件資料中…</div> : <>
-        {tab==="dashboard" && <Dashboard patents={patents}/>}
-        {tab==="patents"   && <PatentsTab patents={patents} setPatents={setPatents} role={user.role}/>}
+        {tab==="dashboard" && <Dashboard patents={patents} money={canSeeMoney(user)}/>}
+        {tab==="patents"   && <PatentsTab patents={patents} setPatents={setPatents} role={user.role} money={canSeeMoney(user)}/>}
         {tab==="maint"     && <MaintTab patents={patents}/>}
         {tab==="analysis"  && <AnalysisTab patents={patents}/>}
         {tab==="timeline"  && <TimelineTab patents={patents}/>}
