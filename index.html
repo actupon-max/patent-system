@@ -1062,6 +1062,82 @@ function TimelineTab({patents}){
 // ══════════════════════════════════════════════════════════
 // 總覽 Dashboard
 // ══════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
+// 版本紀錄（僅管理員）
+// ══════════════════════════════════════════════════════════
+const VSTAT = {
+  live:      {label:"🟢 線上",   bg:"#F0FDF4", tx:"#15803D", bd:"#BBF7D0"},
+  superseded:{label:"⚪ 已取代", bg:"#F3F4F6", tx:"#6B7280", bd:"#E5E7EB"},
+  broken:    {label:"🔴 故障",   bg:"#FEF2F2", tx:"#B91C1C", bd:"#FECACA"},
+  archived:  {label:"📦 封存",   bg:"#F9FAFB", tx:"#9CA3AF", bd:"#F3F4F6"},
+};
+
+function VersionsTab(){
+  const [rows,setRows] = useState([]);
+  const [loading,setLoading] = useState(true);
+  useEffect(()=>{
+    sbFetch("system_versions?select=*&order=deployed_at.desc").then(r=>{setRows(r||[]);setLoading(false);}).catch(()=>setLoading(false));
+  },[]);
+
+  if(loading) return <div style={{textAlign:"center",padding:60,color:"#9CA3AF"}}>載入版本紀錄中…</div>;
+
+  const tw = ts => { try{ return new Date(ts).toLocaleString("zh-TW",{timeZone:"Asia/Taipei",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}); }catch{ return ts; } };
+  const live = rows.find(r=>r.status==="live");
+
+  return <div>
+    <h2 style={{margin:"0 0 4px",fontSize:17,fontWeight:700,color:"#111827"}}>🗂 版本紀錄</h2>
+    <p style={{fontSize:12,color:"#9CA3AF",marginBottom:18}}>每次部署的紀錄。系統出問題時，回到最近一個標示「可回滾 ✅」的版本。</p>
+
+    {live && <div style={{background:"#F0FDF4",border:"1px solid #BBF7D0",borderRadius:12,padding:"16px 20px",marginBottom:18}}>
+      <div style={{fontSize:12,color:"#15803D",fontWeight:700,marginBottom:6}}>🟢 目前線上版本</div>
+      <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+        <span style={{fontSize:20,fontWeight:800,color:"#111827"}}>{live.version||"—"}</span>
+        <span style={{fontSize:13,color:"#374151"}}>{live.summary}</span>
+      </div>
+      <div style={{fontSize:11,color:"#9CA3AF",marginTop:6}}>部署於 {tw(live.deployed_at)}　·　{live.deployment_id}</div>
+    </div>}
+
+    <Card>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+        <thead><tr style={{background:"#F9FAFB"}}>
+          {["版號","部署時間","狀態","可回滾","來源","說明"].map(h=><th key={h} style={{padding:"10px 14px",textAlign:"left",fontWeight:600,color:"#6B7280",fontSize:12,borderBottom:"1px solid #F3F4F6",whiteSpace:"nowrap"}}>{h}</th>)}
+        </tr></thead>
+        <tbody>
+          {rows.map(r=>{
+            const st = VSTAT[r.status]||VSTAT.archived;
+            return <tr key={r.id} style={{borderBottom:"1px solid #F9FAFB",background:r.status==="live"?"#F0FDF4":r.status==="broken"?"#FFFBFB":""}}>
+              <td style={{padding:"10px 14px",fontWeight:800,color:"#111827",whiteSpace:"nowrap"}}>{r.version||"—"}</td>
+              <td style={{padding:"10px 14px",color:"#6B7280",whiteSpace:"nowrap",fontSize:12}}>{tw(r.deployed_at)}</td>
+              <td style={{padding:"10px 14px"}}>
+                <span style={{background:st.bg,color:st.tx,border:`1px solid ${st.bd}`,borderRadius:20,padding:"2px 10px",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{st.label}</span>
+              </td>
+              <td style={{padding:"10px 14px",textAlign:"center"}}>{r.is_known_good?<span title="已驗證可安全回滾至此版" style={{color:"#15803D",fontWeight:800}}>✅</span>:<span style={{color:"#E5E7EB"}}>—</span>}</td>
+              <td style={{padding:"10px 14px",fontSize:11,color:"#9CA3AF",whiteSpace:"nowrap"}}>
+                {r.source==="github" ? <span title={`${r.git_repo}@${r.git_sha}`} style={{color:"#15803D",fontWeight:600}}>✔ GitHub</span>
+                 : r.source==="direct" ? <span title="未經 GitHub，repo 沒有此版本" style={{color:"#B45309",fontWeight:600}}>⚠ 直接上傳</span>
+                 : "—"}
+              </td>
+              <td style={{padding:"10px 14px",fontSize:12,color:"#374151",maxWidth:340}}>
+                <div>{r.summary||"—"}</div>
+                {r.notes && <div style={{fontSize:11,color:"#9CA3AF",marginTop:3}}>{r.notes}</div>}
+              </td>
+            </tr>;
+          })}
+        </tbody>
+      </table>
+      {rows.length===0 && <Empty icon="🗂" msg="尚無版本紀錄"/>}
+    </Card>
+
+    <div style={{marginTop:16,background:"#FFFBEB",border:"1px solid #FDE68A",borderRadius:10,padding:"14px 16px",fontSize:13,color:"#92400E",lineHeight:1.7}}>
+      <b>系統壞掉時怎麼辦：</b>到 Vercel 部署頁 → 找最近一個「可回滾 ✅」的版本 → <b>⋯ → Instant Rollback</b>。<br/>
+      <b>回滾優先於除錯</b> —— 先讓系統活過來，再查原因。
+    </div>
+  </div>;
+}
+
+// ══════════════════════════════════════════════════════════
+// 總覽 Dashboard
+// ══════════════════════════════════════════════════════════
 function Dashboard({patents,money=true}){
   const now = new Date();
   const active  = patents.filter(r=>["申請中","實體審查中","維護中"].includes(r.status)).length;
@@ -1140,6 +1216,7 @@ const ALL_TABS = [
   {id:"analysis", label:"💹 利潤分析",  roles:[], check: u => !!u.can_see_analysis},
   {id:"timeline", label:"📅 時間軸",    roles:["admin","attorney","viewer"]},
   {id:"users",    label:"👤 帳號管理",  roles:["admin"]},
+  {id:"versions", label:"🗂 版本紀錄",  roles:["admin"]},
 ];
 
 function App(){
@@ -1164,7 +1241,7 @@ function App(){
             <div style={{width:36,height:36,background:"linear-gradient(135deg,#1D4ED8,#059669)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>⚖️</div>
             <div>
               <div style={{fontWeight:800,fontSize:15,color:"#111827",letterSpacing:-0.5}}>群淵 GDIP</div>
-              <div style={{fontSize:10,color:"#9CA3AF",letterSpacing:0.5}}>GDIP Patent Management System v1.3.2</div>
+              <div style={{fontSize:10,color:"#9CA3AF",letterSpacing:0.5}}>GDIP Patent Management System v1.3.3</div>
             </div>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -1189,6 +1266,7 @@ function App(){
         {tab==="analysis"  && <AnalysisTab patents={patents}/>}
         {tab==="timeline"  && <TimelineTab patents={patents}/>}
         {tab==="users"     && user.role==="admin" && <UsersTab currentUser={user}/>}
+        {tab==="versions"  && user.role==="admin" && <VersionsTab/>}
       </>}
     </div>
   </div>;
