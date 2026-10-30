@@ -17,46 +17,23 @@
 
 各階段啟用哪些檢查寫在 `rules.yaml` 的 `stages:`。
 
-## 平台上的送件前檢查
+## 整合進 patent_pipeline
 
-檢查器在專利師的電腦上執行，平台負責記錄和把關。群淵 GDIP 平台的案件詳情頁有「✅ 送件前檢查」區塊：
+檢查器接在 `patent_pipeline`（localhost:8787）的流程中自動執行，整合方式見 `INTEGRATE_PIPELINE.md`：
 
-| 步驟 | 平台上的檔案 | 階段 |
+| 時機 | 檢查的檔案 | 階段 |
 |---|---|---|
-| 1 Claim 初稿檢查 | 「Claim」分類最新的 .docx | `claims` |
-| 2 完整說明書檢查 | 「完稿」分類最新的 .docx＋.pdf | `draft` |
-| 3 送件前最終檢查 | 同上 | `final` |
-| 4 智慧局轉檔人工確認 | 第 3 步通過後按鈕確認 | — |
+| ② 請求項初稿產出後 | 請求項 docx | `claims` |
+| ③ 整合說明書產出後 | 說明書 docx＋圖式 PDF | `draft` |
+| 送件前 | 定稿 docx＋正式圖式 | `final` |
 
-### 一鍵檢查（建議）
-
-在 Mac 終端機開著本機服務：
-
-```bash
-patent-review serve
-# 平台用自有網域時：patent-review serve --allow-origin https://你的平台網址
-```
-
-平台偵測到後會顯示「🟢 本機檢查器已連線」，每一步直接按「執行檢查」：
-本機服務從平台下載最新檔案 → 檢查 → 結果回到平台存檔，Excel 報告存在本機 `~/PatentReview報告`。
-本機服務只監聽 127.0.0.1，只接受平台網頁（`*.vercel.app` 與 `--allow-origin` 指定的網址）的請求，只從平台檔案庫下載。
-
-### 備案：上傳報告
-
-本機服務沒開或瀏覽器擋住連線時（例如部分 Safari 設定），改用：在平台點檔名下載最新版到同一個資料夾 →
-`patent-review 資料夾 --stage <階段>` → 把 `reports/*_<階段>_檢查報告.json` 上傳到對應步驟。
-
-不論哪種方式，平台都會重新計算平台檔案的 SHA-256 與報告比對，**檔案不是最新版、階段不對、少了圖式都會被退回**。
-1、2 步做過，3 步針對最新版檔案必改為 0，4 步確認後，才顯示「🟢 可送件」。上傳新版檔案後會提示重新檢查。
-檢查紀錄存在 Supabase `patent_checks` 表（先執行專案根目錄的 `supabase_patent_checks.sql`）。
+「必改」併入流程驗證的 block，「建議」「需人工確認」為 advisory。
 
 ## 版本
 
 - 程式版本：`patent_review/__init__.py`（`patent-review --version`）；規則版本：`rules.yaml` 的 `rules_version`
-- 變更紀錄：`CHANGELOG.md`；GitHub 標記 `patent-review-v<版號>`，可用 `git checkout patent-review-v0.2.0` 取回舊版
-- 平台「🗂 版本紀錄」頁顯示檢查器各版內容、這台電腦安裝的版本是否最新、各版本實際檢查次數
-- 發布新版時：改 `__init__.py` 版號 → 在 `CHANGELOG.md` 加一節 → 在平台 `index.html` 的 `CHECKER_RELEASES` 加一筆
-  （測試會比對三者一致）→ 打 tag `patent-review-v<版號>`
+- 變更紀錄：`CHANGELOG.md`；GitHub 標記 `patent-review-v<版號>` 可取回舊版
+- 發布新版時：改 `__init__.py` 版號 → 在 `CHANGELOG.md` 加一節 → 打 tag `patent-review-v<版號>`
 
 ## 安裝（Mac）
 

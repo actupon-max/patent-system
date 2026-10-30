@@ -7,6 +7,15 @@
 
 規則檔另有 `rules_version`（日期），委員會只改 `rules.yaml` 時更新它即可，不必動程式版本。
 
+## [0.4.0] — 2026-10-30
+
+### 移除
+- 網頁版送件前檢查（`patent-system` 網頁的四步驟區塊、`patent_checks` 資料表）與本機服務 `patent-review serve`：
+  檢查改為整合進 `patent_pipeline` 流程（見 `INTEGRATE_PIPELINE.md`），網頁入口不再需要
+
+### 保留
+- JSON 報告（含檔案 SHA-256）、無 poppler 時的 pypdf 圖式檢查
+
 ## [0.3.0] — 2026-10-30
 
 ### 新增
