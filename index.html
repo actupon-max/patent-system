@@ -956,14 +956,18 @@ function PatentsTab({patents,setPatents,clients,role,userName}){
 // ══════════════════════════════════════════════════════════
 // 送件前檢查（Patent Review System）
 // 1 Claim 初稿 → 2 完整說明書 → 3 送件前最終檢查 → 4 智慧局轉檔人工確認
+// 檢查器在專利師本機執行（patent-review），平台只接收 JSON 報告並比對檔案 SHA-256，
+// 確認報告檢查的就是平台上最新版的檔案。
 // ══════════════════════════════════════════════════════════
 const loadChecks = async (patentId) => sbFetch(`patent_checks?patent_id=eq.${patentId}&select=*&order=checked_at.desc`);
 const saveCheck  = async (row) => sbFetch("patent_checks", {method:"POST", body:JSON.stringify(row)});
-const runPatentCheck = async (body) => {
-  const res = await fetch("/api/patent_check", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
-  let data; try { data = await res.json(); } catch { throw new Error(`檢查服務無回應（HTTP ${res.status}）`); }
-  if(!res.ok) throw new Error(data.error||`HTTP ${res.status}`);
-  return data;
+const REPORT_FORMAT = "patent-review-report/1";
+const fileUrl = f => `${SB_URL}/storage/v1/object/public/patent-files/${f.storage_path}`;
+const sha256Of = async (f) => {
+  const res = await fetch(fileUrl(f));
+  if(!res.ok) throw new Error(`無法讀取平台上的 ${f.filename}（HTTP ${res.status}）`);
+  const buf = await crypto.subtle.digest("SHA-256", await res.arrayBuffer());
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
 };
 const SEV = {
   "必改":      {bg:"#FEF2F2",tx:"#B91C1C",bd:"#FECACA"},
@@ -978,11 +982,10 @@ const REVIEW_STEPS = [
 ];
 const latestOf = (files, cat, ext) => files.filter(f=>f.category===cat && (f.filename||"").toLowerCase().endsWith(ext)).sort((a,b)=>b.version-a.version)[0];
 const twTime = ts => { try{ return new Date(ts).toLocaleString("zh-TW",{timeZone:"Asia/Taipei",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}); }catch{ return ts; } };
-const dlB64 = (name,b64,mime) => { const bin=atob(b64); const u8=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i); const u=URL.createObjectURL(new Blob([u8],{type:mime})); const a=document.createElement("a"); a.href=u; a.download=name; a.click(); URL.revokeObjectURL(u); };
 
 function SevBadge({sev,n}){ const c=SEV[sev]; return <span style={{background:c.bg,color:c.tx,border:`1px solid ${c.bd}`,borderRadius:20,padding:"1px 9px",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{sev}{n!=null?` ${n}`:""}</span>; }
 
-function ReviewResult({check,xlsx,caseNo,onClose}){
+function ReviewResult({check,caseNo,onClose}){
   const [sev,setSev] = useState("全部");
   const issues = check.issues||[];
   const shown = sev==="全部" ? issues : issues.filter(i=>i.severity===sev);
@@ -1000,7 +1003,6 @@ function ReviewResult({check,xlsx,caseNo,onClose}){
         return <button key={k} onClick={()=>setSev(k)} style={{border:sev===k?"2px solid #1D4ED8":"1px solid #E5E7EB",background:"#fff",borderRadius:20,padding:"3px 11px",fontSize:12,cursor:"pointer",fontWeight:sev===k?700:500}}>{k} {n}</button>;
       })}
       <div style={{marginLeft:"auto",display:"flex",gap:6}}>
-        {xlsx && <Btn small variant="success" onClick={()=>dlB64(`${base}_檢查報告.xlsx`,xlsx,"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}>⬇ Excel 報告</Btn>}
         <Btn small variant="ghost" onClick={exportCsv}>⬇ CSV</Btn>
       </div>
     </div>
@@ -1027,7 +1029,7 @@ function ReviewSection({patent,canEdit,userName,filesRev}){
   const [checks,setChecks]   = useState([]);
   const [tableOk,setTableOk] = useState(true);
   const [running,setRunning] = useState(null);
-  const [view,setView]       = useState(null); // {check, xlsx}
+  const [view,setView]       = useState(null); // {check}
 
   const reload = async () => {
     setFiles(await loadFiles(patent.id));
@@ -1040,22 +1042,40 @@ function ReviewSection({patent,canEdit,userName,filesRev}){
   const sameFiles = (a, b) => a && b && a.docx_file_id===b.docx_file_id && (a.pdf_file_id||null)===(b.pdf_file_id||null);
   const isCurrent = (c, step) => { if(!c) return false; const s=sourceOf(step); return !!s.docx && sameFiles(c, {docx_file_id:s.docx.id, pdf_file_id:s.pdf?.id}); };
 
-  const run = async (step) => {
+  const upload = async (step, e) => {
+    const file = e.target.files[0]; e.target.value = "";
+    if(!file) return;
     const {docx,pdf} = sourceOf(step);
-    if(!docx){ alert(`請先在「${FILE_CATS.find(c=>c.key===step.cat).label}」上傳 .docx 檔`); return; }
     setRunning(step.stage);
     try {
-      const out = await runPatentCheck({docx_path:docx.storage_path, pdf_path:pdf?.storage_path||null, stage:step.stage, case:patent.case_no||patent.name});
-      const row = {patent_id:patent.id, stage:step.stage, docx_file_id:docx.id, pdf_file_id:pdf?.id||null,
-        docx_name:`v${docx.version} ${docx.filename}`, pdf_name:pdf?`v${pdf.version} ${pdf.filename}`:null,
-        must_fix:out.counts["必改"], suggest:out.counts["建議"], manual:out.counts["需人工確認"],
-        issues:out.issues, meta:out.meta, tool_version:out.tool_version, rules_version:out.meta["規則版本"]||"",
-        checked_by:userName||"", checked_at:new Date().toISOString()};
+      let rep;
+      try { rep = JSON.parse(await file.text()); } catch { throw new Error("檔案不是有效的 JSON"); }
+      if(rep.format!==REPORT_FORMAT) throw new Error("這不是 Patent Review System 產生的檢查報告（*_檢查報告.json）");
+      if(rep.stage!==step.stage){
+        const other = REVIEW_STEPS.find(s=>s.stage===rep.stage)?.label || rep.stage;
+        throw new Error(`這份報告是「${other}」，此步驟需要 --stage ${step.stage} 產生的報告`);
+      }
+      if(!docx) throw new Error(`平台上還沒有「${FILE_CATS.find(c=>c.key===step.cat).label}」的 .docx，請先上傳`);
+      if(!rep.files?.docx?.sha256) throw new Error("報告缺少檔案指紋，請用新版檢查器重新產生");
+      if(await sha256Of(docx)!==rep.files.docx.sha256)
+        throw new Error(`報告檢查的說明書（${rep.files.docx.name}）與平台上最新的 v${docx.version} ${docx.filename} 內容不同。\n請下載平台上的最新版重新檢查。`);
+      if(step.pdf){
+        if(pdf && !rep.files.pdf) throw new Error(`平台上有圖式 v${pdf.version} ${pdf.filename}，但報告沒有檢查圖式。請把圖式 PDF 放進同一個資料夾重新檢查。`);
+        if(!pdf && rep.files.pdf) throw new Error(`報告檢查了圖式（${rep.files.pdf.name}），但平台上還沒有上傳圖式 PDF。請先上傳。`);
+        if(pdf && await sha256Of(pdf)!==rep.files.pdf.sha256)
+          throw new Error(`報告檢查的圖式（${rep.files.pdf.name}）與平台上最新的 v${pdf.version} ${pdf.filename} 內容不同。\n請下載平台上的最新版重新檢查。`);
+      }
+      const c = rep.counts||{};
+      const row = {patent_id:patent.id, stage:step.stage, docx_file_id:docx.id, pdf_file_id:step.pdf&&pdf?pdf.id:null,
+        docx_name:`v${docx.version} ${docx.filename}`, pdf_name:step.pdf&&pdf?`v${pdf.version} ${pdf.filename}`:null,
+        must_fix:c["必改"]||0, suggest:c["建議"]||0, manual:c["需人工確認"]||0,
+        issues:rep.issues||[], meta:rep.meta||{}, tool_version:rep.tool_version||"", rules_version:rep.rules_version||"",
+        note:`本機檢查報告：${file.name}`, checked_by:userName||"", checked_at:new Date().toISOString()};
       let saved = row;
-      if(tableOk){ try { const r = await saveCheck(row); saved = (r&&r[0])||row; } catch(e){ alert("檢查完成，但紀錄未能儲存："+e.message); } }
+      if(tableOk){ try { const r = await saveCheck(row); saved = (r&&r[0])||row; } catch(e2){ alert("報告已驗證，但紀錄未能儲存："+e2.message); } }
       setChecks(cs=>[saved,...cs]);
-      setView({check:saved, xlsx:out.xlsx_b64});
-    } catch(e){ alert("檢查失敗："+e.message); }
+      setView({check:saved});
+    } catch(err){ alert("無法採用此報告：\n"+err.message); }
     setRunning(null);
   };
 
@@ -1105,16 +1125,22 @@ function ReviewSection({patent,canEdit,userName,filesRev}){
             </div>
             <div style={{fontSize:11,color:"#9CA3AF",marginTop:3}}>{step.desc}</div>
             <div style={{fontSize:11,color:"#6B7280",marginTop:5}}>
-              檔案：{src.docx ? `📘 v${src.docx.version} ${src.docx.filename}` : <span style={{color:"#B45309"}}>尚未上傳 .docx</span>}
-              {step.pdf && (src.pdf ? `　📕 v${src.pdf.version} ${src.pdf.filename}` : "　（無圖式 PDF）")}
+              檔案：{src.docx ? <a href={fileUrl(src.docx)} target="_blank" rel="noopener" style={{color:"#1D4ED8"}}>📘 v{src.docx.version} {src.docx.filename}</a> : <span style={{color:"#B45309"}}>尚未上傳 .docx</span>}
+              {step.pdf && (src.pdf ? <>　<a href={fileUrl(src.pdf)} target="_blank" rel="noopener" style={{color:"#1D4ED8"}}>📕 v{src.pdf.version} {src.pdf.filename}</a></> : "　（無圖式 PDF）")}
             </div>
+            {canEdit && !(pass&&cur) && <div style={{fontSize:11,color:"#6B7280",marginTop:5,background:"#F9FAFB",borderRadius:6,padding:"5px 8px"}}>
+              下載上列檔案到同一個資料夾，在本機執行：<code style={{fontFamily:"monospace",color:"#111827",userSelect:"all"}}>patent-review 資料夾 --stage {step.stage}</code>，再上傳產生的 <code style={{fontFamily:"monospace"}}>*_{step.stage}_檢查報告.json</code>
+            </div>}
             {c && <div style={{display:"flex",gap:6,alignItems:"center",marginTop:6,flexWrap:"wrap"}}>
               <SevBadge sev="必改" n={c.must_fix}/><SevBadge sev="建議" n={c.suggest}/><SevBadge sev="需人工確認" n={c.manual}/>
               <span style={{fontSize:11,color:"#9CA3AF"}}>{twTime(c.checked_at)} · {c.checked_by||"—"}</span>
               <button onClick={()=>setView({check:c})} style={{background:"none",border:"none",color:"#1D4ED8",cursor:"pointer",fontSize:12,fontWeight:600}}>查看結果</button>
             </div>}
           </div>
-          {canEdit && <Btn small onClick={()=>run(step)} disabled={!!running||!src.docx}>{running===step.stage?"檢查中…":c?"重新檢查":"執行檢查"}</Btn>}
+          {canEdit && <label style={{cursor:(running||!src.docx)?"not-allowed":"pointer",opacity:(running||!src.docx)?0.6:1,background:"#2563EB",color:"#fff",borderRadius:8,padding:"5px 12px",fontSize:12,fontWeight:600,whiteSpace:"nowrap"}}>
+            {running===step.stage?"驗證中…":c?"重新上傳報告":"上傳檢查報告"}
+            <input type="file" accept=".json,application/json" style={{display:"none"}} disabled={!!running||!src.docx} onChange={e=>upload(step,e)}/>
+          </label>}
         </div>;
       })}
       <div style={{border:"1px solid #E5E7EB",borderRadius:12,padding:"12px 14px",display:"flex",gap:12,alignItems:"flex-start",flexWrap:"wrap"}}>
@@ -1128,7 +1154,7 @@ function ReviewSection({patent,canEdit,userName,filesRev}){
         {canEdit && <Btn small variant="success" onClick={confirmConversion} disabled={!finalOk||convOk||!tableOk}>{convOk?"已確認":"確認已完成轉檔"}</Btn>}
       </div>
     </div>
-    {view && <ReviewResult check={view.check} xlsx={view.xlsx} caseNo={patent.case_no} onClose={()=>setView(null)}/>}
+    {view && <ReviewResult check={view.check} caseNo={patent.case_no} onClose={()=>setView(null)}/>}
   </div>;
 }
 

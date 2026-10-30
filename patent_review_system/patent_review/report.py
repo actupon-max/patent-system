@@ -88,10 +88,28 @@ def write_summary_xlsx(results: list[Result], path: Path) -> None:
     wb.save(path)
 
 
+REPORT_FORMAT = "patent-review-report/1"
+
+
+def report_dict(res: Result) -> dict:
+    """平台上傳用的檢查報告。files 內的 sha256 讓平台確認報告檢查的就是平台上的檔案。"""
+    return {
+        "format": REPORT_FORMAT,
+        "case": res.case,
+        "stage": res.stage,
+        "tool_version": res.tool_version,
+        "rules_version": res.rules_version,
+        "files": res.files,
+        "counts": {s: res.count(s) for s in SEVERITY_ORDER},
+        "meta": {k: ("" if v is None else str(v)) for k, v in res.meta.items()},
+        "issues": [i.to_dict() for i in res.sorted_issues()],
+        "tables": res.tables,
+    }
+
+
 def write_json(res: Result, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"case": res.case, "meta": res.meta, "issues": [i.to_dict() for i in res.sorted_issues()],
-                                "tables": res.tables}, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    path.write_text(json.dumps(report_dict(res), ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
 
 def terminal_summary(res: Result, limit: int = 40) -> str:

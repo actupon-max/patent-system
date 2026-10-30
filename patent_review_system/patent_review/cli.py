@@ -52,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-o", "--out", default="reports", help="報告輸出資料夾（預設 ./reports）")
     ap.add_argument("--ignore", help="已確認非問題的 ID 清單（YAML）")
     ap.add_argument("--llm", action="store_true", help="啟用 E 項 LLM 語意檢查（未公開案件請先確認資料政策）")
-    ap.add_argument("--json", action="store_true", help="另外輸出 JSON")
+    ap.add_argument("--no-json", action="store_true", help="不輸出 JSON（平台上傳用的檢查報告）")
     ap.add_argument("--version", action="version", version=f"Patent Review System {__version__}")
     a = ap.parse_args(argv)
 
@@ -64,8 +64,8 @@ def main(argv: list[str] | None = None) -> int:
         res = check_case(docx, pdf, rules=rules, stage=a.stage, case=name, use_llm=a.llm, ignore=ignore)
         results.append(res)
         write_case_xlsx(res, out / f"{name}_檢查報告.xlsx")
-        if a.json:
-            write_json(res, out / f"{name}_檢查報告.json")
+        if not a.no_json:
+            write_json(res, out / f"{name}_{res.stage}_檢查報告.json")
         print(terminal_summary(res))
         print()
     if not results:

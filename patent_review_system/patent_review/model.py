@@ -37,6 +37,10 @@ class Result:
     issues: list[Issue] = field(default_factory=list)
     tables: dict[str, list[dict]] = field(default_factory=dict)  # 附表：符號對照、依附關係等
     meta: dict = field(default_factory=dict)
+    stage: str = ""
+    files: dict = field(default_factory=dict)   # {"docx": {name, sha256, size}, "pdf": {...} 或 None}
+    tool_version: str = ""
+    rules_version: str = ""
 
     def add(self, issue: Issue) -> None:
         self.issues.append(issue)

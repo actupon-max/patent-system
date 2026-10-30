@@ -37,8 +37,11 @@ def load_rules(path: str | None = None) -> dict:
         return yaml.safe_load(f)
 
 
-def _sha(path: str) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:12]
+def _file_info(path: str | None) -> dict | None:
+    if not path:
+        return None
+    data = Path(path).read_bytes()
+    return {"name": Path(path).name, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
 
 
 def check_case(docx: str, pdf: str | None = None, *, rules: dict | None = None, stage: str | None = None,
@@ -52,13 +55,15 @@ def check_case(docx: str, pdf: str | None = None, *, rules: dict | None = None, 
     rules["_enabled"] = {g: g in groups for g in ("antecedent", "support")}
 
     spec = build_spec(docx, rules)
-    res = Result(case=case or Path(docx).stem)
+    res = Result(case=case or Path(docx).stem, stage=stage, tool_version=__version__,
+                 rules_version=str(rules.get("rules_version", "")),
+                 files={"docx": _file_info(docx), "pdf": _file_info(pdf)})
     res.meta.update({
         "工具版本": f"Patent Review System {__version__}",
         "規則版本": rules.get("rules_version", ""),
         "檢查階段": f"{stage}（{rules['stages'][stage]['label']}）",
-        "說明書": f"{Path(docx).name}（sha256 {_sha(docx)}）",
-        "圖式": f"{Path(pdf).name}（sha256 {_sha(pdf)}）" if pdf else "未提供",
+        "說明書": f"{Path(docx).name}（sha256 {res.files['docx']['sha256'][:12]}）",
+        "圖式": f"{Path(pdf).name}（sha256 {res.files['pdf']['sha256'][:12]}）" if pdf else "未提供",
     })
 
     for g, fn in A_GROUPS.items():

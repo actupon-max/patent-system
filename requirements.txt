@@ -1,7 +1,0 @@
-# Vercel Python 函式（api/patent_check.py）所需套件
-python-docx>=1.1
-pdfplumber>=0.11
-pypdf>=4.0
-openpyxl>=3.1
-PyYAML>=6.0
-Pillow>=10.0

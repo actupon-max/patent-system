@@ -93,10 +93,10 @@ def test_llm_quote_must_exist(samples, rules):
 
 def test_cli_writes_reports(samples, tmp_path):
     from patent_review.cli import main
-    code = main([str(samples / "clean"), str(samples / "case1_like"), "-o", str(tmp_path), "--json"])
+    code = main([str(samples / "clean"), str(samples / "case1_like"), "-o", str(tmp_path)])
     assert code == 1   # 有必改時回傳 1，可接 CI 或批次腳本
     assert (tmp_path / "clean_檢查報告.xlsx").exists()
-    assert (tmp_path / "case1_like_檢查報告.json").exists()
+    assert (tmp_path / "case1_like_final_檢查報告.json").exists()
     assert (tmp_path / "總表.xlsx").exists()
 
 
@@ -122,11 +122,18 @@ def test_pdf_checks_without_poppler(samples, rules, monkeypatch):
     assert not find(res, "D03"), "嵌入字型不應被報未嵌入"
 
 
-def test_service_returns_json_and_xlsx(samples):
+def test_json_report_for_platform(samples, tmp_path):
+    """平台上傳用的報告：含階段、版本與檔案完整 sha256，平台據此確認報告對應的檔案。"""
+    import hashlib
     import json
-    from patent_review.service import run_check_bytes
+    from patent_review.cli import main
     d = samples / "case1_like"
-    out = run_check_bytes(next(d.glob("*.docx")).read_bytes(), next(d.glob("*.pdf")).read_bytes(), stage="final")
-    json.dumps(out, ensure_ascii=False)
-    assert out["counts"]["必改"] == 2
-    assert out["xlsx_b64"].startswith("UEsDB")   # zip 檔頭
+    main([str(d), "--stage", "draft", "-o", str(tmp_path)])
+    rep = json.loads((tmp_path / "case1_like_draft_檢查報告.json").read_text(encoding="utf-8"))
+    assert rep["format"] == "patent-review-report/1"
+    assert rep["stage"] == "draft"
+    assert rep["counts"]["必改"] == 2
+    docx = next(d.glob("*.docx"))
+    pdf = next(d.glob("*.pdf"))
+    assert rep["files"]["docx"]["sha256"] == hashlib.sha256(docx.read_bytes()).hexdigest()
+    assert rep["files"]["pdf"]["sha256"] == hashlib.sha256(pdf.read_bytes()).hexdigest()
