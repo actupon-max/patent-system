@@ -42,21 +42,6 @@ def _load_ignore(path: str | None) -> set[str]:
     return {str(x).split()[0] for x in data}
 
 
-def serve_main(argv: list[str]) -> int:
-    from .server import DEFAULT_PORT, DEFAULT_SUPABASE, serve
-    ap = argparse.ArgumentParser(prog="patent-review serve",
-                                 description="啟動本機服務，讓群淵 GDIP 平台直接呼叫這台電腦上的檢查器")
-    ap.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"連接埠（預設 {DEFAULT_PORT}）")
-    ap.add_argument("--allow-origin", action="append", default=[],
-                    help="允許呼叫的平台網址，例如 https://gdip.example.com（*.vercel.app 已預設允許）")
-    ap.add_argument("--supabase-url", default=DEFAULT_SUPABASE, help="平台檔案庫網址")
-    ap.add_argument("-o", "--out", default="~/PatentReview報告", help="Excel 報告存放資料夾")
-    ap.add_argument("--rules", help="規則檔路徑")
-    a = ap.parse_args(argv)
-    serve(a.port, a.supabase_url, a.allow_origin, a.out, a.rules)
-    return 0
-
-
 def gate_main(argv: list[str]) -> int:
     import json
     from .pipeline import record_supabase, run_gate, summary_line
@@ -96,13 +81,11 @@ def gate_main(argv: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if argv[:1] == ["serve"]:
-        return serve_main(argv[1:])
     if argv[:1] == ["gate"]:
         return gate_main(argv[1:])
     ap = argparse.ArgumentParser(prog="patent-review",
                                  description="Patent Review System：台灣發明專利說明書與圖式格式檢查（不修改原檔）",
-                                 epilog="平台一鍵檢查：patent-review serve　｜　pipeline 關卡：patent-review gate")
+                                 epilog="patent_pipeline 關卡：patent-review gate <案件資料夾> --stage <階段>")
     ap.add_argument("inputs", nargs="+", help="案件資料夾（內含 .docx 與 .pdf）或 .docx 檔")
     ap.add_argument("--pdf", help="單一 .docx 時指定圖式 PDF")
     ap.add_argument("--stage", help="檢查階段：claims（請求項初稿）/ draft（說明書初稿）/ final（送件版）")

@@ -138,15 +138,3 @@ def test_json_report_for_platform(samples, tmp_path):
     assert rep["files"]["docx"]["sha256"] == hashlib.sha256(docx.read_bytes()).hexdigest()
     assert rep["files"]["pdf"]["sha256"] == hashlib.sha256(pdf.read_bytes()).hexdigest()
 
-
-def test_platform_release_list_in_sync():
-    """平台 index.html 的 CHECKER_RELEASES 必須與檢查器版本、CHANGELOG 一致。"""
-    import re
-    from pathlib import Path
-    from patent_review import __version__
-    root = Path(__file__).resolve().parents[2]
-    html = (root / "index.html").read_text(encoding="utf-8")
-    versions = re.findall(r'\{version:"([\d.]+)"', html[html.index("const CHECKER_RELEASES"):])
-    changelog = (root / "patent_review_system" / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert versions[0] == __version__, "平台的最新檢查器版本與程式版本不同"
-    assert versions == re.findall(r"^## \[([\d.]+)\]", changelog, re.M), "平台版本清單與 CHANGELOG 不同"

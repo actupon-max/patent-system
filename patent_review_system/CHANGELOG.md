@@ -7,7 +7,7 @@
 
 規則檔另有 `rules_version`（日期），委員會只改 `rules.yaml` 時更新它即可，不必動程式版本。
 
-## [0.4.0] — 2026-10-30
+## [0.5.0] — 2026-10-30
 
 ### 新增
 - `patent-review gate <案件資料夾> --stage claims|draft|final`：patent_pipeline 的自動檢查關卡
@@ -15,6 +15,15 @@
   - 報告寫到 `output/_process/format_check_<階段>_v<N>.xlsx／.json`，關卡結果寫 `format_check_<階段>_latest.json`
   - 有「必改」→ `gate: block`（結束碼 1）；建議、需人工確認列 advisory；找不到檔案結束碼 2
   - `--json` 輸出結果供平台解析；`--supabase` 寫入 `agent_runs`（stage=format_check）與 `deliverables`（doc_type=format_check）
+
+## [0.4.0] — 2026-10-30
+
+### 移除
+- 網頁版送件前檢查（`patent-system` 網頁的四步驟區塊、`patent_checks` 資料表）與本機服務 `patent-review serve`：
+  檢查改為整合進 `patent_pipeline` 流程（見 `INTEGRATE_PIPELINE.md`），網頁入口不再需要
+
+### 保留
+- JSON 報告（含檔案 SHA-256）、無 poppler 時的 pypdf 圖式檢查
 
 ## [0.3.0] — 2026-10-30
 
