@@ -962,6 +962,31 @@ function PatentsTab({patents,setPatents,clients,role,userName}){
 const loadChecks = async (patentId) => sbFetch(`patent_checks?patent_id=eq.${patentId}&select=*&order=checked_at.desc`);
 const saveCheck  = async (row) => sbFetch("patent_checks", {method:"POST", body:JSON.stringify(row)});
 const REPORT_FORMAT = "patent-review-report/1";
+// 本機檢查器服務（專利師電腦上執行 patent-review serve）
+const LOCAL_CHECKER = "http://127.0.0.1:8765";
+// 檢查器版本紀錄：每次發布新版檢查器時，與 patent_review_system/CHANGELOG.md 同步更新（測試會比對）
+const CHECKER_RELEASES = [
+  {version:"0.3.0", date:"2026-10-30", summary:"本機服務 patent-review serve：平台可一鍵呼叫本機檢查器"},
+  {version:"0.2.0", date:"2026-10-30", summary:"平台上傳 JSON 報告並比對檔案指紋；無 poppler 時以 pypdf 檢查圖式"},
+  {version:"0.1.0", date:"2026-10-30", summary:"第一版：三個檢查階段，A–E 共 30 餘項規則"},
+];
+const LATEST_CHECKER = CHECKER_RELEASES[0].version;
+const verCmp = (a,b) => { const x=String(a).split(".").map(Number), y=String(b).split(".").map(Number); for(let i=0;i<3;i++){ if((x[i]||0)!==(y[i]||0)) return (x[i]||0)-(y[i]||0); } return 0; };
+const probeLocalChecker = async () => {
+  try {
+    const ctl = new AbortController(); const t = setTimeout(()=>ctl.abort(), 1500);
+    const r = await fetch(`${LOCAL_CHECKER}/health`, {signal:ctl.signal}); clearTimeout(t);
+    return r.ok ? await r.json() : null;
+  } catch { return null; }
+};
+const runLocalCheck = async (body) => {
+  let res;
+  try { res = await fetch(`${LOCAL_CHECKER}/check`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)}); }
+  catch { throw new Error("連不到本機檢查器，請確認 patent-review serve 仍在執行"); }
+  let data; try { data = await res.json(); } catch { throw new Error(`本機檢查器無回應（HTTP ${res.status}）`); }
+  if(!res.ok) throw new Error(data.error||`HTTP ${res.status}`);
+  return data;
+};
 const fileUrl = f => `${SB_URL}/storage/v1/object/public/patent-files/${f.storage_path}`;
 const sha256Of = async (f) => {
   const res = await fetch(fileUrl(f));
@@ -985,7 +1010,7 @@ const twTime = ts => { try{ return new Date(ts).toLocaleString("zh-TW",{timeZone
 
 function SevBadge({sev,n}){ const c=SEV[sev]; return <span style={{background:c.bg,color:c.tx,border:`1px solid ${c.bd}`,borderRadius:20,padding:"1px 9px",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{sev}{n!=null?` ${n}`:""}</span>; }
 
-function ReviewResult({check,caseNo,onClose}){
+function ReviewResult({check,localReport,caseNo,onClose}){
   const [sev,setSev] = useState("全部");
   const issues = check.issues||[];
   const shown = sev==="全部" ? issues : issues.filter(i=>i.severity===sev);
@@ -996,6 +1021,7 @@ function ReviewResult({check,caseNo,onClose}){
     <div style={{fontSize:12,color:"#6B7280",marginBottom:12,lineHeight:1.7}}>
       📘 {check.docx_name}{check.pdf_name?`　📕 ${check.pdf_name}`:""}<br/>
       {twTime(check.checked_at)} · {check.checked_by||"—"} · 檢查器 v{check.tool_version||"—"} · 規則 {check.rules_version||"—"}
+      {localReport && <><br/>Excel 報告已存在本機：<code style={{fontFamily:"monospace",userSelect:"all"}}>{localReport}</code></>}
     </div>
     <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12,alignItems:"center"}}>
       {["全部","必改","建議","需人工確認","資訊"].map(k=>{
@@ -1030,6 +1056,9 @@ function ReviewSection({patent,canEdit,userName,filesRev}){
   const [tableOk,setTableOk] = useState(true);
   const [running,setRunning] = useState(null);
   const [view,setView]       = useState(null); // {check}
+  const [local,setLocal]     = useState(undefined); // undefined 偵測中；null 未啟動；{version,…}
+  const detect = async () => { setLocal(undefined); setLocal(await probeLocalChecker()); };
+  useEffect(()=>{ detect(); },[]);
 
   const reload = async () => {
     setFiles(await loadFiles(patent.id));
@@ -1042,40 +1071,57 @@ function ReviewSection({patent,canEdit,userName,filesRev}){
   const sameFiles = (a, b) => a && b && a.docx_file_id===b.docx_file_id && (a.pdf_file_id||null)===(b.pdf_file_id||null);
   const isCurrent = (c, step) => { if(!c) return false; const s=sourceOf(step); return !!s.docx && sameFiles(c, {docx_file_id:s.docx.id, pdf_file_id:s.pdf?.id}); };
 
+  // 驗證報告（階段、檔案指紋）後存檔；本機服務與上傳報告共用
+  const acceptReport = async (step, rep, note) => {
+    const {docx,pdf} = sourceOf(step);
+    if(rep.format!==REPORT_FORMAT) throw new Error("這不是 Patent Review System 產生的檢查報告（*_檢查報告.json）");
+    if(rep.stage!==step.stage){
+      const other = REVIEW_STEPS.find(s=>s.stage===rep.stage)?.label || rep.stage;
+      throw new Error(`這份報告是「${other}」，此步驟需要 --stage ${step.stage} 產生的報告`);
+    }
+    if(!docx) throw new Error(`平台上還沒有「${FILE_CATS.find(c=>c.key===step.cat).label}」的 .docx，請先上傳`);
+    if(!rep.files?.docx?.sha256) throw new Error("報告缺少檔案指紋，請用新版檢查器重新產生");
+    if(await sha256Of(docx)!==rep.files.docx.sha256)
+      throw new Error(`報告檢查的說明書（${rep.files.docx.name}）與平台上最新的 v${docx.version} ${docx.filename} 內容不同。\n請下載平台上的最新版重新檢查。`);
+    if(step.pdf){
+      if(pdf && !rep.files.pdf) throw new Error(`平台上有圖式 v${pdf.version} ${pdf.filename}，但報告沒有檢查圖式。請把圖式 PDF 放進同一個資料夾重新檢查。`);
+      if(!pdf && rep.files.pdf) throw new Error(`報告檢查了圖式（${rep.files.pdf.name}），但平台上還沒有上傳圖式 PDF。請先上傳。`);
+      if(pdf && await sha256Of(pdf)!==rep.files.pdf.sha256)
+        throw new Error(`報告檢查的圖式（${rep.files.pdf.name}）與平台上最新的 v${pdf.version} ${pdf.filename} 內容不同。\n請下載平台上的最新版重新檢查。`);
+    }
+    const c = rep.counts||{};
+    const row = {patent_id:patent.id, stage:step.stage, docx_file_id:docx.id, pdf_file_id:step.pdf&&pdf?pdf.id:null,
+      docx_name:`v${docx.version} ${docx.filename}`, pdf_name:step.pdf&&pdf?`v${pdf.version} ${pdf.filename}`:null,
+      must_fix:c["必改"]||0, suggest:c["建議"]||0, manual:c["需人工確認"]||0,
+      issues:rep.issues||[], meta:rep.meta||{}, tool_version:rep.tool_version||"", rules_version:rep.rules_version||"",
+      note, checked_by:userName||"", checked_at:new Date().toISOString()};
+    let saved = row;
+    if(tableOk){ try { const r = await saveCheck(row); saved = (r&&r[0])||row; } catch(e2){ alert("報告已驗證，但紀錄未能儲存："+e2.message); } }
+    setChecks(cs=>[saved,...cs]);
+    setView({check:saved, localReport:rep.local_report});
+  };
+
   const upload = async (step, e) => {
     const file = e.target.files[0]; e.target.value = "";
     if(!file) return;
-    const {docx,pdf} = sourceOf(step);
     setRunning(step.stage);
     try {
       let rep;
       try { rep = JSON.parse(await file.text()); } catch { throw new Error("檔案不是有效的 JSON"); }
-      if(rep.format!==REPORT_FORMAT) throw new Error("這不是 Patent Review System 產生的檢查報告（*_檢查報告.json）");
-      if(rep.stage!==step.stage){
-        const other = REVIEW_STEPS.find(s=>s.stage===rep.stage)?.label || rep.stage;
-        throw new Error(`這份報告是「${other}」，此步驟需要 --stage ${step.stage} 產生的報告`);
-      }
-      if(!docx) throw new Error(`平台上還沒有「${FILE_CATS.find(c=>c.key===step.cat).label}」的 .docx，請先上傳`);
-      if(!rep.files?.docx?.sha256) throw new Error("報告缺少檔案指紋，請用新版檢查器重新產生");
-      if(await sha256Of(docx)!==rep.files.docx.sha256)
-        throw new Error(`報告檢查的說明書（${rep.files.docx.name}）與平台上最新的 v${docx.version} ${docx.filename} 內容不同。\n請下載平台上的最新版重新檢查。`);
-      if(step.pdf){
-        if(pdf && !rep.files.pdf) throw new Error(`平台上有圖式 v${pdf.version} ${pdf.filename}，但報告沒有檢查圖式。請把圖式 PDF 放進同一個資料夾重新檢查。`);
-        if(!pdf && rep.files.pdf) throw new Error(`報告檢查了圖式（${rep.files.pdf.name}），但平台上還沒有上傳圖式 PDF。請先上傳。`);
-        if(pdf && await sha256Of(pdf)!==rep.files.pdf.sha256)
-          throw new Error(`報告檢查的圖式（${rep.files.pdf.name}）與平台上最新的 v${pdf.version} ${pdf.filename} 內容不同。\n請下載平台上的最新版重新檢查。`);
-      }
-      const c = rep.counts||{};
-      const row = {patent_id:patent.id, stage:step.stage, docx_file_id:docx.id, pdf_file_id:step.pdf&&pdf?pdf.id:null,
-        docx_name:`v${docx.version} ${docx.filename}`, pdf_name:step.pdf&&pdf?`v${pdf.version} ${pdf.filename}`:null,
-        must_fix:c["必改"]||0, suggest:c["建議"]||0, manual:c["需人工確認"]||0,
-        issues:rep.issues||[], meta:rep.meta||{}, tool_version:rep.tool_version||"", rules_version:rep.rules_version||"",
-        note:`本機檢查報告：${file.name}`, checked_by:userName||"", checked_at:new Date().toISOString()};
-      let saved = row;
-      if(tableOk){ try { const r = await saveCheck(row); saved = (r&&r[0])||row; } catch(e2){ alert("報告已驗證，但紀錄未能儲存："+e2.message); } }
-      setChecks(cs=>[saved,...cs]);
-      setView({check:saved});
+      await acceptReport(step, rep, `上傳報告：${file.name}`);
     } catch(err){ alert("無法採用此報告：\n"+err.message); }
+    setRunning(null);
+  };
+
+  const run = async (step) => {
+    const {docx,pdf} = sourceOf(step);
+    if(!docx){ alert(`請先在「${FILE_CATS.find(c=>c.key===step.cat).label}」上傳 .docx 檔`); return; }
+    setRunning(step.stage);
+    try {
+      const rep = await runLocalCheck({docx_path:docx.storage_path, pdf_path:pdf?.storage_path||null, stage:step.stage,
+        case:patent.case_no||"案件", names:{docx:docx.filename, pdf:pdf?.filename}});
+      await acceptReport(step, rep, `本機服務 v${rep.tool_version}`);
+    } catch(err){ alert("檢查失敗：\n"+err.message); }
     setRunning(null);
   };
 
@@ -1107,6 +1153,13 @@ function ReviewSection({patent,canEdit,userName,filesRev}){
         {ready ? "🟢 可送件" : `🟡 尚缺 ${missing.length} 項`}
       </span>
     </div>
+    {canEdit && <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",background:local?"#F0FDF4":"#F9FAFB",border:`1px solid ${local?"#BBF7D0":"#E5E7EB"}`,borderRadius:8,padding:"7px 12px",fontSize:12,marginBottom:10,color:"#374151"}}>
+      {local===undefined ? "偵測本機檢查器中…"
+       : local ? <>🟢 本機檢查器 v{local.version}（規則 {local.rules_version}）已連線，可直接按「執行檢查」
+           {verCmp(local.version, LATEST_CHECKER)<0 && <span style={{color:"#B45309",fontWeight:700}}>　⚠ 最新版為 v{LATEST_CHECKER}，請更新（git pull）</span>}</>
+       : <>⚪ 未偵測到本機檢查器。在 Mac 終端機執行 <code style={{fontFamily:"monospace",userSelect:"all",color:"#111827"}}>patent-review serve</code> 後即可一鍵檢查；或在本機產生報告後上傳。</>}
+      {local!==undefined && <button onClick={detect} style={{marginLeft:"auto",background:"none",border:"1px solid #D1D5DB",borderRadius:6,padding:"2px 8px",fontSize:11,cursor:"pointer",color:"#374151"}}>重新偵測</button>}
+    </div>}
     {!tableOk && <div style={{background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:8,padding:"8px 12px",fontSize:12,color:"#B91C1C",marginBottom:10}}>
       尚未建立 patent_checks 資料表：可以檢查，但結果不會保存。請管理員在 Supabase 執行 supabase_patent_checks.sql。
     </div>}
@@ -1128,7 +1181,7 @@ function ReviewSection({patent,canEdit,userName,filesRev}){
               檔案：{src.docx ? <a href={fileUrl(src.docx)} target="_blank" rel="noopener" style={{color:"#1D4ED8"}}>📘 v{src.docx.version} {src.docx.filename}</a> : <span style={{color:"#B45309"}}>尚未上傳 .docx</span>}
               {step.pdf && (src.pdf ? <>　<a href={fileUrl(src.pdf)} target="_blank" rel="noopener" style={{color:"#1D4ED8"}}>📕 v{src.pdf.version} {src.pdf.filename}</a></> : "　（無圖式 PDF）")}
             </div>
-            {canEdit && !(pass&&cur) && <div style={{fontSize:11,color:"#6B7280",marginTop:5,background:"#F9FAFB",borderRadius:6,padding:"5px 8px"}}>
+            {canEdit && !local && !(pass&&cur) && <div style={{fontSize:11,color:"#6B7280",marginTop:5,background:"#F9FAFB",borderRadius:6,padding:"5px 8px"}}>
               下載上列檔案到同一個資料夾，在本機執行：<code style={{fontFamily:"monospace",color:"#111827",userSelect:"all"}}>patent-review 資料夾 --stage {step.stage}</code>，再上傳產生的 <code style={{fontFamily:"monospace"}}>*_{step.stage}_檢查報告.json</code>
             </div>}
             {c && <div style={{display:"flex",gap:6,alignItems:"center",marginTop:6,flexWrap:"wrap"}}>
@@ -1137,10 +1190,15 @@ function ReviewSection({patent,canEdit,userName,filesRev}){
               <button onClick={()=>setView({check:c})} style={{background:"none",border:"none",color:"#1D4ED8",cursor:"pointer",fontSize:12,fontWeight:600}}>查看結果</button>
             </div>}
           </div>
-          {canEdit && <label style={{cursor:(running||!src.docx)?"not-allowed":"pointer",opacity:(running||!src.docx)?0.6:1,background:"#2563EB",color:"#fff",borderRadius:8,padding:"5px 12px",fontSize:12,fontWeight:600,whiteSpace:"nowrap"}}>
-            {running===step.stage?"驗證中…":c?"重新上傳報告":"上傳檢查報告"}
-            <input type="file" accept=".json,application/json" style={{display:"none"}} disabled={!!running||!src.docx} onChange={e=>upload(step,e)}/>
-          </label>}
+          {canEdit && <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:5}}>
+            {local && <Btn small onClick={()=>run(step)} disabled={!!running||!src.docx}>{running===step.stage?"檢查中…":c?"重新檢查":"執行檢查"}</Btn>}
+            <label style={local
+              ? {cursor:(running||!src.docx)?"not-allowed":"pointer",color:"#6B7280",fontSize:11,textDecoration:"underline"}
+              : {cursor:(running||!src.docx)?"not-allowed":"pointer",opacity:(running||!src.docx)?0.6:1,background:"#2563EB",color:"#fff",borderRadius:8,padding:"5px 12px",fontSize:12,fontWeight:600,whiteSpace:"nowrap"}}>
+              {running===step.stage&&!local?"驗證中…":local?"或上傳報告":c?"重新上傳報告":"上傳檢查報告"}
+              <input type="file" accept=".json,application/json" style={{display:"none"}} disabled={!!running||!src.docx} onChange={e=>upload(step,e)}/>
+            </label>
+          </div>}
         </div>;
       })}
       <div style={{border:"1px solid #E5E7EB",borderRadius:12,padding:"12px 14px",display:"flex",gap:12,alignItems:"flex-start",flexWrap:"wrap"}}>
@@ -1154,7 +1212,7 @@ function ReviewSection({patent,canEdit,userName,filesRev}){
         {canEdit && <Btn small variant="success" onClick={confirmConversion} disabled={!finalOk||convOk||!tableOk}>{convOk?"已確認":"確認已完成轉檔"}</Btn>}
       </div>
     </div>
-    {view && <ReviewResult check={view.check} caseNo={patent.case_no} onClose={()=>setView(null)}/>}
+    {view && <ReviewResult check={view.check} localReport={view.localReport} caseNo={patent.case_no} onClose={()=>setView(null)}/>}
   </div>;
 }
 
@@ -1413,6 +1471,56 @@ const VSTAT = {
   archived:  {label:"📦 封存",   bg:"#F9FAFB", tx:"#9CA3AF", bd:"#F3F4F6"},
 };
 
+// 檢查器（Patent Review System）版本：發布紀錄、本機已安裝版本、各版本實際使用次數
+function CheckerVersions(){
+  const [local,setLocal] = useState(undefined);
+  const [usage,setUsage] = useState(null);
+  useEffect(()=>{
+    probeLocalChecker().then(setLocal);
+    sbFetch("patent_checks?select=tool_version,rules_version,checked_at&stage=neq.tipo_conversion&order=checked_at.desc")
+      .then(rows=>{
+        const m = {};
+        (rows||[]).forEach(r=>{ const k=`${r.tool_version||"—"}|${r.rules_version||"—"}`; if(!m[k]) m[k]={tool:r.tool_version||"—",rules:r.rules_version||"—",n:0,last:r.checked_at}; m[k].n++; });
+        setUsage(Object.values(m));
+      }).catch(()=>setUsage([]));
+  },[]);
+  const th = {padding:"10px 14px",textAlign:"left",fontWeight:600,color:"#6B7280",fontSize:12,borderBottom:"1px solid #F3F4F6",whiteSpace:"nowrap"};
+  const td = {padding:"10px 14px",fontSize:13,color:"#374151"};
+  return <div style={{marginTop:24}}>
+    <h3 style={{margin:"0 0 4px",fontSize:15,fontWeight:700,color:"#111827"}}>🔎 檢查器版本（Patent Review System）</h3>
+    <p style={{fontSize:12,color:"#9CA3AF",marginBottom:12}}>
+      最新版 v{LATEST_CHECKER}。
+      {local===undefined ? " 偵測本機檢查器中…"
+        : local ? <> 這台電腦的檢查器：v{local.version}（規則 {local.rules_version}）{verCmp(local.version,LATEST_CHECKER)<0 ? <b style={{color:"#B45309"}}>　⚠ 需更新</b> : <span style={{color:"#15803D"}}>　✔ 已是最新</span>}</>
+        : " 這台電腦未啟動本機檢查器（patent-review serve）。"}
+      　詳細變更見 patent_review_system/CHANGELOG.md；GitHub 標記 patent-review-v版號 可取回任一版本。
+    </p>
+    <Card>
+      <table style={{width:"100%",borderCollapse:"collapse"}}>
+        <thead><tr style={{background:"#F9FAFB"}}>{["版號","發布日期","內容"].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead>
+        <tbody>{CHECKER_RELEASES.map((r,i)=><tr key={r.version} style={{borderBottom:"1px solid #F9FAFB",background:i===0?"#F0FDF4":""}}>
+          <td style={{...td,fontWeight:800,color:"#111827",whiteSpace:"nowrap"}}>v{r.version}{i===0 && <span style={{marginLeft:6,fontSize:11,color:"#15803D"}}>最新</span>}</td>
+          <td style={{...td,whiteSpace:"nowrap",color:"#6B7280",fontSize:12}}>{r.date}</td>
+          <td style={td}>{r.summary}</td>
+        </tr>)}</tbody>
+      </table>
+    </Card>
+    <div style={{fontSize:13,fontWeight:700,color:"#374151",margin:"16px 0 8px"}}>實際使用紀錄（依送件前檢查紀錄統計）</div>
+    <Card>
+      {usage===null ? <div style={{padding:20,textAlign:"center",color:"#9CA3AF",fontSize:13}}>載入中…</div>
+       : usage.length===0 ? <Empty icon="🔎" msg="尚無檢查紀錄"/>
+       : <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead><tr style={{background:"#F9FAFB"}}>{["檢查器版本","規則版本","檢查次數","最近使用"].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead>
+          <tbody>{usage.map(u=><tr key={u.tool+u.rules} style={{borderBottom:"1px solid #F9FAFB"}}>
+            <td style={{...td,fontWeight:700}}>v{u.tool}{verCmp(u.tool,LATEST_CHECKER)<0 && <span style={{marginLeft:6,fontSize:11,color:"#B45309"}}>舊版</span>}</td>
+            <td style={td}>{u.rules}</td><td style={td}>{u.n}</td>
+            <td style={{...td,fontSize:12,color:"#6B7280"}}>{new Date(u.last).toLocaleString("zh-TW",{timeZone:"Asia/Taipei"})}</td>
+          </tr>)}</tbody>
+        </table>}
+    </Card>
+  </div>;
+}
+
 function VersionsTab(){
   const [rows,setRows] = useState([]);
   const [loading,setLoading] = useState(true);
@@ -1468,6 +1576,8 @@ function VersionsTab(){
       </table>
       {rows.length===0 && <Empty icon="🗂" msg="尚無版本紀錄"/>}
     </Card>
+
+    <CheckerVersions/>
 
     <div style={{marginTop:16,background:"#FFFBEB",border:"1px solid #FDE68A",borderRadius:10,padding:"14px 16px",fontSize:13,color:"#92400E",lineHeight:1.7}}>
       <b>系統壞掉時怎麼辦：</b>到 Vercel 部署頁 → 找最近一個「可回滾 ✅」的版本 → <b>⋯ → Instant Rollback</b>。<br/>
@@ -1550,7 +1660,7 @@ function Dashboard({patents}){
 // ══════════════════════════════════════════════════════════
 // 主 App
 // ══════════════════════════════════════════════════════════
-const APP_VERSION = "v1.5.0";
+const APP_VERSION = "v1.6.0";
 const ALL_TABS = [
   {id:"dashboard",label:"📊 總覽",      roles:["admin","attorney","viewer"]},
   {id:"patents",  label:"📋 申請案件",  roles:["admin","attorney","viewer"]},
@@ -1623,4 +1733,4 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 </script>
 </body>
 </html>
-<!-- deploy 2026-10-30 v1.5.0 cache-bust -->
+<!-- deploy 2026-10-30 v1.6.0 cache-bust -->
