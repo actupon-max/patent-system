@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "patent-review-system"
+dynamic = ["version"]
+description = "Patent Review System：台灣發明專利說明書與圖式格式檢查器"
+requires-python = ">=3.10"
+dependencies = [
+    "python-docx>=1.1",
+    "pdfplumber>=0.11",
+    "pypdf>=4.0",
+    "openpyxl>=3.1",
+    "PyYAML>=6.0",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+llm = ["anthropic"]
+dev = ["pytest>=8", "reportlab>=4"]
+
+[project.scripts]
+patent-review = "patent_review.cli:main"
+
+[tool.setuptools]
+packages = ["patent_review", "patent_review.checks"]
+
+[tool.setuptools.dynamic]
+version = {attr = "patent_review.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

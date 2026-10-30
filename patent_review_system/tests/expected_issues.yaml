@@ -1,0 +1,26 @@
+# 真實案件驗收標準（只寫規則與位置，不放案件內容）
+# 樣本檔放在本機，不進 git：
+#   PATENT_SAMPLES_DIR=~/Desktop/GDIP/4_平台資訊/格式檢查器/samples python3 -m pytest tests/test_real_samples.py -v
+# 資料夾結構：<PATENT_SAMPLES_DIR>/<folder>/ 內含說明書 .docx 與圖式 .pdf
+#
+# must_find：必須抓到（三項為合格門檻）
+# review_sheet：審查意見表其他項目；scope=程式 表示程式應抓（計入召回率），scope=人工 表示不屬程式範圍
+# 依審查意見表逐項補上；location / message 為「包含」比對
+
+cases:
+  - name: 劉教授第一案
+    folder: case1          # 改成實際資料夾名稱
+    stage: final
+    must_find:
+      - {rule: C07, message: 圖4}
+      - {rule: B05, location: 請求項8, message: 重複}
+    review_sheet: []
+      # - {rule: A04, location: "【0012】", scope: 程式, note: 審查意見表第3點}
+      # - {scope: 人工, note: 審查意見表第5點：技術用語建議}
+
+  - name: 劉教授第二案
+    folder: case2
+    stage: final
+    must_find:
+      - {rule: A04, message: "("}
+    review_sheet: []
