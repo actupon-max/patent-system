@@ -160,6 +160,23 @@ def build_pdf(path: Path, figs=FIGS, label_pt: float = 14, sym_pt: float = 14, c
     c.save()
 
 
+def build_raster_pdf(path: Path, dpi: int = 150, color=True):
+    """點陣圖式：一頁 A4 影像、無文字層。"""
+    from PIL import Image, ImageDraw
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    w_in, h_in = 4, 3
+    im = Image.new("RGB", (w_in * dpi, h_in * dpi), "white")
+    d = ImageDraw.Draw(im)
+    d.rectangle([20, 20, w_in * dpi - 20, h_in * dpi - 20], outline=(255, 0, 0) if color else (0, 0, 0), width=4)
+    c = canvas.Canvas(str(path), pagesize=A4)
+    c.drawImage(ImageReader(im), 100, 400, width=w_in * 72, height=h_in * 72)
+    c.showPage()
+    c.save()
+
+
 def variants() -> dict[str, dict]:
     v = {"clean": copy.deepcopy(BASE)}
 
@@ -238,6 +255,10 @@ def main(out: str) -> None:
     bad.mkdir(parents=True, exist_ok=True)
     build_docx(bad / "bad_pdf_說明書.docx", BASE)
     build_pdf(bad / "bad_pdf_圖式.pdf", label_pt=14, sym_pt=7, color=True)
+    raster = out_dir / "raster_pdf"
+    raster.mkdir(parents=True, exist_ok=True)
+    build_docx(raster / "raster_pdf_說明書.docx", BASE)
+    build_raster_pdf(raster / "raster_pdf_圖式.pdf")
 
 
 if __name__ == "__main__":

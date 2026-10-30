@@ -32,7 +32,8 @@ def _sheet(ws, header, rows, widths=None):
             c.alignment = Alignment(wrap_text=True, vertical="top")
 
 
-def write_case_xlsx(res: Result, path: Path) -> None:
+def write_case_xlsx(res: Result, path) -> None:
+    """path 可以是檔案路徑或 BytesIO。"""
     wb = Workbook()
     ws = wb.active
     ws.title = "總表"
@@ -65,7 +66,8 @@ def write_case_xlsx(res: Result, path: Path) -> None:
         t = wb.create_sheet(name[:31])
         header = list(rows[0].keys())
         _sheet(t, header, [[r.get(h, "") for h in header] for r in rows])
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(path, Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(path)
 
 

@@ -7,6 +7,13 @@
 
 規則檔另有 `rules_version`（日期），委員會只改 `rules.yaml` 時更新它即可，不必動程式版本。
 
+## [0.2.0] — 2026-10-30
+
+### 新增
+- 平台整合：`patent_review/service.py`（輸入檔案位元組、回傳 JSON 與 Excel），供 `api/patent_check.py`（Vercel）呼叫
+- 沒有 poppler 的環境（雲端平台）改用 pypdf 檢查字型嵌入、影像解析度與色彩
+- 點陣圖式測試樣本（解析度、彩色、無文字層）
+
 ## [0.1.0] — 2026-10-30
 
 第一版。

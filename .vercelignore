@@ -1,1 +1,4 @@
-patent_review_system/
+# 檢查器的測試與樣本不部署（真實案件樣本絕不上傳）
+patent_review_system/tests/
+patent_review_system/samples/
+patent_review_system/reports/

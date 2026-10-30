@@ -242,17 +242,18 @@ function CaseNoBadge({caseNo}){
 }
 
 // ── 文件管理區塊 ──────────────────────────────────────────
-function FilesSection({patentId}){
+function FilesSection({patentId,onChange}){
   const [files,setFiles]     = useState([]);
   const [loading,setLoading] = useState(true);
   const [uploading,setUploading] = useState({});
 
   useEffect(()=>{ loadFiles(patentId).then(f=>{setFiles(f);setLoading(false);}); },[patentId]);
+  const refresh = async () => { setFiles(await loadFiles(patentId)); onChange && onChange(); };
 
   const handleUpload = async (cat, e) => {
     const file = e.target.files[0]; if(!file) return;
     setUploading(u=>({...u,[cat]:true}));
-    try { await uploadFile(patentId, cat, file); setFiles(await loadFiles(patentId)); }
+    try { await uploadFile(patentId, cat, file); await refresh(); }
     catch(err){ alert("上傳失敗："+err.message); }
     setUploading(u=>({...u,[cat]:false}));
     e.target.value="";
@@ -261,7 +262,7 @@ function FilesSection({patentId}){
   const handleDelete = async (id, path) => {
     if(!confirm("確定刪除此檔案？")) return;
     await deleteFile(id, path);
-    setFiles(await loadFiles(patentId));
+    await refresh();
   };
 
   const catFiles = cat => [...files.filter(f=>f.category===cat)].sort((a,b)=>b.version-a.version);
@@ -775,7 +776,7 @@ function FileBadge({patentId}){
   return <span style={{background:"#EFF6FF",color:"#2563EB",borderRadius:10,padding:"1px 6px",fontSize:10,fontWeight:700,marginLeft:4}}>📎{cnt}</span>;
 }
 
-function PatentsTab({patents,setPatents,clients,role}){
+function PatentsTab({patents,setPatents,clients,role,userName}){
   const canEdit = role !== "viewer";
   const [search,setSearch]   = useState("");
   const [fType,setFType]     = useState("");
@@ -947,12 +948,192 @@ function PatentsTab({patents,setPatents,clients,role}){
     </Modal>}
 
     {detail && <Modal title={detail.name} onClose={()=>setDetail(null)} wide>
-      <PatentDetail r={detail} clients={clients} patents={patents} onEdit={()=>{setModal({item:detail});setDetail(null);}} onDelete={()=>handleDelete(detail.id)} canEdit={canEdit}/>
+      <PatentDetail r={detail} clients={clients} patents={patents} onEdit={()=>{setModal({item:detail});setDetail(null);}} onDelete={()=>handleDelete(detail.id)} canEdit={canEdit} userName={userName}/>
     </Modal>}
   </div>;
 }
 
-function PatentDetail({r,clients,patents,onEdit,onDelete,canEdit}){
+// ══════════════════════════════════════════════════════════
+// 送件前檢查（Patent Review System）
+// 1 Claim 初稿 → 2 完整說明書 → 3 送件前最終檢查 → 4 智慧局轉檔人工確認
+// ══════════════════════════════════════════════════════════
+const loadChecks = async (patentId) => sbFetch(`patent_checks?patent_id=eq.${patentId}&select=*&order=checked_at.desc`);
+const saveCheck  = async (row) => sbFetch("patent_checks", {method:"POST", body:JSON.stringify(row)});
+const runPatentCheck = async (body) => {
+  const res = await fetch("/api/patent_check", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  let data; try { data = await res.json(); } catch { throw new Error(`檢查服務無回應（HTTP ${res.status}）`); }
+  if(!res.ok) throw new Error(data.error||`HTTP ${res.status}`);
+  return data;
+};
+const SEV = {
+  "必改":      {bg:"#FEF2F2",tx:"#B91C1C",bd:"#FECACA"},
+  "建議":      {bg:"#FFFBEB",tx:"#B45309",bd:"#FDE68A"},
+  "需人工確認":{bg:"#EFF6FF",tx:"#1D4ED8",bd:"#BFDBFE"},
+  "資訊":      {bg:"#F3F4F6",tx:"#6B7280",bd:"#E5E7EB"},
+};
+const REVIEW_STEPS = [
+  {stage:"claims", no:1, label:"Claim 初稿檢查",  cat:"claim",       pdf:false, desc:"Claim 分類最新的 Word 檔：編號、依附、多項附屬、前置基礎、全半形"},
+  {stage:"draft",  no:2, label:"完整說明書檢查",  cat:"final_draft", pdf:true,  desc:"完稿分類最新的 Word 檔（及圖式 PDF）：段落、段號、摘要、符號對照、圖號引用、代表圖、說明書支持"},
+  {stage:"final",  no:3, label:"送件前最終檢查",  cat:"final_draft", pdf:true,  desc:"送件版全部項目：再加字型行距、編修殘留、轉檔風險、規費試算、圖式 PDF 規格"},
+];
+const latestOf = (files, cat, ext) => files.filter(f=>f.category===cat && (f.filename||"").toLowerCase().endsWith(ext)).sort((a,b)=>b.version-a.version)[0];
+const twTime = ts => { try{ return new Date(ts).toLocaleString("zh-TW",{timeZone:"Asia/Taipei",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}); }catch{ return ts; } };
+const dlB64 = (name,b64,mime) => { const bin=atob(b64); const u8=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i); const u=URL.createObjectURL(new Blob([u8],{type:mime})); const a=document.createElement("a"); a.href=u; a.download=name; a.click(); URL.revokeObjectURL(u); };
+
+function SevBadge({sev,n}){ const c=SEV[sev]; return <span style={{background:c.bg,color:c.tx,border:`1px solid ${c.bd}`,borderRadius:20,padding:"1px 9px",fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{sev}{n!=null?` ${n}`:""}</span>; }
+
+function ReviewResult({check,xlsx,caseNo,onClose}){
+  const [sev,setSev] = useState("全部");
+  const issues = check.issues||[];
+  const shown = sev==="全部" ? issues : issues.filter(i=>i.severity===sev);
+  const base = `${caseNo||"案件"}_${REVIEW_STEPS.find(s=>s.stage===check.stage)?.label||check.stage}`;
+  const exportCsv = () => dlCSV(`${base}_檢查結果.csv`, toCSV(["嚴重度","規則","檔案","位置","問題","實際值","期望值","依據","原文引句","ID"],
+    issues.map(i=>[i.severity,i.rule,i.file,i.location,i.message,i.actual,i.expected,i.basis,i.quote,i.id])));
+  return <Modal title={`檢查結果 — ${REVIEW_STEPS.find(s=>s.stage===check.stage)?.label||check.stage}`} onClose={onClose} wide>
+    <div style={{fontSize:12,color:"#6B7280",marginBottom:12,lineHeight:1.7}}>
+      📘 {check.docx_name}{check.pdf_name?`　📕 ${check.pdf_name}`:""}<br/>
+      {twTime(check.checked_at)} · {check.checked_by||"—"} · 檢查器 v{check.tool_version||"—"} · 規則 {check.rules_version||"—"}
+    </div>
+    <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12,alignItems:"center"}}>
+      {["全部","必改","建議","需人工確認","資訊"].map(k=>{
+        const n = k==="全部" ? issues.length : issues.filter(i=>i.severity===k).length;
+        return <button key={k} onClick={()=>setSev(k)} style={{border:sev===k?"2px solid #1D4ED8":"1px solid #E5E7EB",background:"#fff",borderRadius:20,padding:"3px 11px",fontSize:12,cursor:"pointer",fontWeight:sev===k?700:500}}>{k} {n}</button>;
+      })}
+      <div style={{marginLeft:"auto",display:"flex",gap:6}}>
+        {xlsx && <Btn small variant="success" onClick={()=>dlB64(`${base}_檢查報告.xlsx`,xlsx,"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}>⬇ Excel 報告</Btn>}
+        <Btn small variant="ghost" onClick={exportCsv}>⬇ CSV</Btn>
+      </div>
+    </div>
+    {shown.length===0 ? <Empty icon="✅" msg="沒有此類問題"/> :
+    <div style={{border:"1px solid #F3F4F6",borderRadius:10,overflow:"auto",maxHeight:"55vh"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+        <thead><tr style={{background:"#F9FAFB"}}>
+          {["嚴重度","規則","位置","問題","實際值／期望值"].map(h=><th key={h} style={{padding:"8px 10px",textAlign:"left",color:"#6B7280",fontWeight:600,whiteSpace:"nowrap"}}>{h}</th>)}
+        </tr></thead>
+        <tbody>{shown.map((i,k)=><tr key={i.id+"-"+k} style={{borderTop:"1px solid #F3F4F6",verticalAlign:"top"}}>
+          <td style={{padding:"7px 10px"}}><SevBadge sev={i.severity}/></td>
+          <td style={{padding:"7px 10px",fontFamily:"monospace",color:"#6B7280"}}>{i.rule}</td>
+          <td style={{padding:"7px 10px",whiteSpace:"nowrap"}}>{i.file==="圖式"?"🖼 ":""}{i.location}</td>
+          <td style={{padding:"7px 10px",color:"#111827"}}>{i.message}{i.basis && <div style={{fontSize:10,color:"#9CA3AF",marginTop:2}}>{i.basis}</div>}</td>
+          <td style={{padding:"7px 10px",color:"#374151"}}>{i.actual && <div>實際：{i.actual}</div>}{i.expected && <div style={{color:"#15803D"}}>期望：{i.expected}</div>}</td>
+        </tr>)}</tbody>
+      </table>
+    </div>}
+  </Modal>;
+}
+
+function ReviewSection({patent,canEdit,userName,filesRev}){
+  const [files,setFiles]     = useState([]);
+  const [checks,setChecks]   = useState([]);
+  const [tableOk,setTableOk] = useState(true);
+  const [running,setRunning] = useState(null);
+  const [view,setView]       = useState(null); // {check, xlsx}
+
+  const reload = async () => {
+    setFiles(await loadFiles(patent.id));
+    try { setChecks(await loadChecks(patent.id)||[]); setTableOk(true); } catch { setTableOk(false); }
+  };
+  useEffect(()=>{ reload(); },[patent.id, filesRev]);
+
+  const lastOf    = stage => checks.find(c=>c.stage===stage);
+  const sourceOf  = step => ({docx:latestOf(files, step.cat, ".docx"), pdf:step.pdf ? latestOf(files, "final_draft", ".pdf") : null});
+  const sameFiles = (a, b) => a && b && a.docx_file_id===b.docx_file_id && (a.pdf_file_id||null)===(b.pdf_file_id||null);
+  const isCurrent = (c, step) => { if(!c) return false; const s=sourceOf(step); return !!s.docx && sameFiles(c, {docx_file_id:s.docx.id, pdf_file_id:s.pdf?.id}); };
+
+  const run = async (step) => {
+    const {docx,pdf} = sourceOf(step);
+    if(!docx){ alert(`請先在「${FILE_CATS.find(c=>c.key===step.cat).label}」上傳 .docx 檔`); return; }
+    setRunning(step.stage);
+    try {
+      const out = await runPatentCheck({docx_path:docx.storage_path, pdf_path:pdf?.storage_path||null, stage:step.stage, case:patent.case_no||patent.name});
+      const row = {patent_id:patent.id, stage:step.stage, docx_file_id:docx.id, pdf_file_id:pdf?.id||null,
+        docx_name:`v${docx.version} ${docx.filename}`, pdf_name:pdf?`v${pdf.version} ${pdf.filename}`:null,
+        must_fix:out.counts["必改"], suggest:out.counts["建議"], manual:out.counts["需人工確認"],
+        issues:out.issues, meta:out.meta, tool_version:out.tool_version, rules_version:out.meta["規則版本"]||"",
+        checked_by:userName||"", checked_at:new Date().toISOString()};
+      let saved = row;
+      if(tableOk){ try { const r = await saveCheck(row); saved = (r&&r[0])||row; } catch(e){ alert("檢查完成，但紀錄未能儲存："+e.message); } }
+      setChecks(cs=>[saved,...cs]);
+      setView({check:saved, xlsx:out.xlsx_b64});
+    } catch(e){ alert("檢查失敗："+e.message); }
+    setRunning(null);
+  };
+
+  const fin = lastOf("final"), conv = lastOf("tipo_conversion");
+  const finalOk = !!fin && fin.must_fix===0 && isCurrent(fin, REVIEW_STEPS[2]);
+  const convOk  = finalOk && !!conv && sameFiles(conv, fin) && new Date(conv.checked_at) >= new Date(fin.checked_at);
+  const missing = [];
+  if(!lastOf("claims")) missing.push("Claim 初稿檢查");
+  if(!lastOf("draft"))  missing.push("完整說明書檢查");
+  if(!finalOk)          missing.push("送件前最終檢查（最新檔案、必改 0 項）");
+  if(!convOk)           missing.push("智慧局轉檔確認");
+  const ready = missing.length===0;
+
+  const confirmConversion = async () => {
+    if(!confirm("確認已用智慧局電子送件系統完成轉檔，且轉檔結果（段號、圖式、公式、字型）無誤？")) return;
+    const row = {patent_id:patent.id, stage:"tipo_conversion", docx_file_id:fin.docx_file_id, pdf_file_id:fin.pdf_file_id||null,
+      docx_name:fin.docx_name, pdf_name:fin.pdf_name, must_fix:0, suggest:0, manual:0, note:"智慧局轉檔人工確認",
+      checked_by:userName||"", checked_at:new Date().toISOString()};
+    try { await saveCheck(row); await reload(); } catch(e){ alert("儲存失敗："+e.message); }
+  };
+
+  const Dot = ({ok,no}) => <div style={{width:26,height:26,borderRadius:13,background:ok?"#15803D":"#E5E7EB",color:ok?"#fff":"#6B7280",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:13,flexShrink:0}}>{ok?"✓":no}</div>;
+
+  return <div style={{marginTop:20}}>
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,paddingTop:16,borderTop:"1px solid #F3F4F6",flexWrap:"wrap"}}>
+      <span style={{fontWeight:700,fontSize:14,color:"#111827"}}>✅ 送件前檢查</span>
+      <span style={{fontSize:11,color:"#9CA3AF"}}>Patent Review System</span>
+      <span title={ready?"":"尚缺："+missing.join("、")} style={{marginLeft:"auto",background:ready?"#F0FDF4":"#FFFBEB",color:ready?"#15803D":"#B45309",border:`1px solid ${ready?"#BBF7D0":"#FDE68A"}`,borderRadius:20,padding:"3px 12px",fontSize:12,fontWeight:700}}>
+        {ready ? "🟢 可送件" : `🟡 尚缺 ${missing.length} 項`}
+      </span>
+    </div>
+    {!tableOk && <div style={{background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:8,padding:"8px 12px",fontSize:12,color:"#B91C1C",marginBottom:10}}>
+      尚未建立 patent_checks 資料表：可以檢查，但結果不會保存。請管理員在 Supabase 執行 supabase_patent_checks.sql。
+    </div>}
+    <div style={{display:"grid",gap:10}}>
+      {REVIEW_STEPS.map(step=>{
+        const c = lastOf(step.stage), src = sourceOf(step), cur = isCurrent(c, step), pass = !!c && c.must_fix===0;
+        const st = !c ? {t:"未檢查",bg:"#F3F4F6",tx:"#6B7280"}
+                 : !cur ? {t:"檔案已更新，需重新檢查",bg:"#FFFBEB",tx:"#B45309"}
+                 : pass ? {t:"通過",bg:"#F0FDF4",tx:"#15803D"} : {t:`必改 ${c.must_fix} 項`,bg:"#FEF2F2",tx:"#B91C1C"};
+        return <div key={step.stage} style={{border:"1px solid #E5E7EB",borderRadius:12,padding:"12px 14px",display:"flex",gap:12,alignItems:"flex-start",flexWrap:"wrap"}}>
+          <Dot ok={pass&&cur} no={step.no}/>
+          <div style={{flex:1,minWidth:200}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+              <span style={{fontWeight:700,fontSize:13,color:"#111827"}}>{step.label}</span>
+              <span style={{background:st.bg,color:st.tx,borderRadius:20,padding:"1px 9px",fontSize:11,fontWeight:700}}>{st.t}</span>
+            </div>
+            <div style={{fontSize:11,color:"#9CA3AF",marginTop:3}}>{step.desc}</div>
+            <div style={{fontSize:11,color:"#6B7280",marginTop:5}}>
+              檔案：{src.docx ? `📘 v${src.docx.version} ${src.docx.filename}` : <span style={{color:"#B45309"}}>尚未上傳 .docx</span>}
+              {step.pdf && (src.pdf ? `　📕 v${src.pdf.version} ${src.pdf.filename}` : "　（無圖式 PDF）")}
+            </div>
+            {c && <div style={{display:"flex",gap:6,alignItems:"center",marginTop:6,flexWrap:"wrap"}}>
+              <SevBadge sev="必改" n={c.must_fix}/><SevBadge sev="建議" n={c.suggest}/><SevBadge sev="需人工確認" n={c.manual}/>
+              <span style={{fontSize:11,color:"#9CA3AF"}}>{twTime(c.checked_at)} · {c.checked_by||"—"}</span>
+              <button onClick={()=>setView({check:c})} style={{background:"none",border:"none",color:"#1D4ED8",cursor:"pointer",fontSize:12,fontWeight:600}}>查看結果</button>
+            </div>}
+          </div>
+          {canEdit && <Btn small onClick={()=>run(step)} disabled={!!running||!src.docx}>{running===step.stage?"檢查中…":c?"重新檢查":"執行檢查"}</Btn>}
+        </div>;
+      })}
+      <div style={{border:"1px solid #E5E7EB",borderRadius:12,padding:"12px 14px",display:"flex",gap:12,alignItems:"flex-start",flexWrap:"wrap"}}>
+        <Dot ok={convOk} no={4}/>
+        <div style={{flex:1,minWidth:200}}>
+          <div style={{fontWeight:700,fontSize:13,color:"#111827"}}>智慧局轉檔人工確認</div>
+          <div style={{fontSize:11,color:"#9CA3AF",marginTop:3}}>程式無法模擬智慧局轉檔。第 3 步通過後，用電子送件系統實際轉檔一次，確認段號、圖式、公式、字型無誤。</div>
+          {convOk && <div style={{fontSize:11,color:"#15803D",marginTop:5}}>已確認：{twTime(conv.checked_at)} · {conv.checked_by||"—"}</div>}
+          {!finalOk && <div style={{fontSize:11,color:"#B45309",marginTop:5}}>需先通過第 3 步（最新檔案、必改 0 項）</div>}
+        </div>
+        {canEdit && <Btn small variant="success" onClick={confirmConversion} disabled={!finalOk||convOk||!tableOk}>{convOk?"已確認":"確認已完成轉檔"}</Btn>}
+      </div>
+    </div>
+    {view && <ReviewResult check={view.check} xlsx={view.xlsx} caseNo={patent.case_no} onClose={()=>setView(null)}/>}
+  </div>;
+}
+
+function PatentDetail({r,clients,patents,onEdit,onDelete,canEdit,userName}){
+  const [filesRev,setFilesRev] = useState(0);
   const p = profit(r);
   const gkey = groupKeyOf(r.case_no||"") || r.group_key || "";
   const sibs = gkey ? patents.filter(x=>x.id!==r.id && (groupKeyOf(x.case_no||"")||x.group_key)===gkey) : [];
@@ -1012,7 +1193,8 @@ function PatentDetail({r,clients,patents,onEdit,onDelete,canEdit}){
       </div>
     </div>}
 
-    <FilesSection patentId={r.id}/>
+    <FilesSection patentId={r.id} onChange={()=>setFilesRev(v=>v+1)}/>
+    <ReviewSection patent={r} canEdit={canEdit} userName={userName} filesRev={filesRev}/>
   </div>;
 }
 
@@ -1342,7 +1524,7 @@ function Dashboard({patents}){
 // ══════════════════════════════════════════════════════════
 // 主 App
 // ══════════════════════════════════════════════════════════
-const APP_VERSION = "v1.4.0";
+const APP_VERSION = "v1.5.0";
 const ALL_TABS = [
   {id:"dashboard",label:"📊 總覽",      roles:["admin","attorney","viewer"]},
   {id:"patents",  label:"📋 申請案件",  roles:["admin","attorney","viewer"]},
@@ -1399,7 +1581,7 @@ function App(){
     <div style={{maxWidth:1400,margin:"0 auto",padding:"24px 24px"}}>
       {loading ? <div style={{textAlign:"center",padding:60,color:"#9CA3AF",fontSize:14}}>⏳ 載入案件資料中…</div> : <>
         {tab==="dashboard" && <Dashboard patents={patents}/>}
-        {tab==="patents"   && <PatentsTab patents={patents} setPatents={setPatents} clients={clients} role={user.role}/>}
+        {tab==="patents"   && <PatentsTab patents={patents} setPatents={setPatents} clients={clients} role={user.role} userName={user.name}/>}
         {tab==="clients"   && <ClientsTab clients={clients} setClients={setClients} role={user.role}/>}
         {tab==="maint"     && <MaintTab patents={patents}/>}
         {tab==="analysis"  && <AnalysisTab patents={patents}/>}
@@ -1415,4 +1597,4 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 </script>
 </body>
 </html>
-<!-- deploy 2026-07-25 v1.4.0 cache-bust -->
+<!-- deploy 2026-10-30 v1.5.0 cache-bust -->

@@ -12,6 +12,7 @@ import pdfplumber
 from pypdf import PdfReader
 
 PT_TO_MM = 25.4 / 72
+HAVE_POPPLER = bool(shutil.which("pdfimages") and shutil.which("pdffonts"))
 SYMBOL_RE = re.compile(r"^[A-Za-z]?\d{1,4}[a-z]?['′’]?$")
 
 
@@ -57,6 +58,12 @@ class PdfData:
     pages: list[PdfPage]
     ocr_available: bool
     notes: list[str] = field(default_factory=list)
+
+
+def _pixels(im):
+    """RGB 影像的像素 (r, g, b)。"""
+    b = im.tobytes()
+    return zip(b[0::3], b[1::3], b[2::3])
 
 
 def _color_kind(c, tol: int) -> str | None:
@@ -118,7 +125,7 @@ def _image_is_color(path: str, page: int, tol: int) -> str | None:
         for f in files:
             im = Image.open(f).convert("RGB")
             im.thumbnail((400, 400))
-            for r, g, b in im.getdata():
+            for r, g, b in _pixels(im):
                 if max(r, g, b) - min(r, g, b) > tol:
                     return "color"
                 v = (r + g + b) / 3
@@ -137,6 +144,54 @@ def _fonts(path: str, page: int) -> list[tuple[str, bool]]:
         if m:
             res.append((m.group(1), m.group(2) == "yes"))
     return res
+
+
+# ── 沒有 poppler（例如雲端平台）時的替代做法 ──
+def _fonts_pypdf(rp) -> list[tuple[str, bool]]:
+    out = []
+    try:
+        fonts = rp.get("/Resources", {}).get_object().get("/Font", {}).get_object()
+    except Exception:
+        return out
+    for ref in fonts.values():
+        f = ref.get_object()
+        name = str(f.get("/BaseFont", "?")).lstrip("/")
+        if f.get("/Subtype") == "/Type3":
+            out.append((name, True))
+            continue
+        desc = f.get("/FontDescriptor")
+        if desc is None and f.get("/DescendantFonts"):
+            desc = f["/DescendantFonts"][0].get_object().get("/FontDescriptor")
+        desc = desc.get_object() if desc is not None else {}
+        out.append((name, any(k in desc for k in ("/FontFile", "/FontFile2", "/FontFile3"))))
+    return out
+
+
+def _images_fallback(rp, pg, num: int, tol: int) -> list[dict]:
+    rows = []
+    for k, im in enumerate(pg.images, start=1):
+        sw, sh = im.get("srcsize") or (0, 0)
+        w_pt, h_pt = max(im["width"], 0.01), max(im["height"], 0.01)
+        rows.append({"page": num, "num": k, "width": int(sw), "height": int(sh), "color": "?", "bpc": im.get("bits") or 0,
+                     "x_ppi": int(sw / (w_pt / 72)), "y_ppi": int(sh / (h_pt / 72))})
+    kind = None
+    try:
+        for img in rp.images:
+            pil = img.image.convert("RGB")
+            pil.thumbnail((400, 400))
+            for r, g, b in _pixels(pil):
+                if max(r, g, b) - min(r, g, b) > tol:
+                    kind = "color"
+                    break
+                if tol < (r + g + b) / 3 < 255 - tol:
+                    kind = kind or "gray"
+            if kind == "color":
+                break
+    except Exception:
+        kind = "unknown"
+    for r in rows:
+        r["actual"] = kind
+    return rows
 
 
 def _ocr_words(path: str, page: int, cfg: dict) -> list[Word]:
@@ -170,7 +225,7 @@ def read_pdf(path: str, rules: dict) -> PdfData:
     cfg = rules["pdf"]
     label_re = re.compile(rules["figures"]["pdf_label_pattern"])
     ocr_ok = bool(shutil.which("tesseract") and shutil.which("pdftoppm")) and cfg["ocr"].get("enabled", True)
-    images = _pdfimages_list(path)
+    images = _pdfimages_list(path) if HAVE_POPPLER else []
     reader = PdfReader(path)
     pages: list[PdfPage] = []
     with pdfplumber.open(path) as pdf:
@@ -209,6 +264,11 @@ def read_pdf(path: str, rules: dict) -> PdfData:
                     k = _color_kind(obj.get(key), cfg["gray_tolerance"])
                     if k:
                         page.vector_colors.add(k)
+            if not HAVE_POPPLER:
+                page.images = _images_fallback(rp, pg, i, cfg["gray_tolerance"])
+                page.fonts = _fonts_pypdf(rp)
+                pages.append(page)
+                continue
             page.images = [im for im in images if im["page"] == i]
             decoded = None
             for im in page.images:

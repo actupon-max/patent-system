@@ -98,3 +98,35 @@ def test_cli_writes_reports(samples, tmp_path):
     assert (tmp_path / "clean_檢查報告.xlsx").exists()
     assert (tmp_path / "case1_like_檢查報告.json").exists()
     assert (tmp_path / "總表.xlsx").exists()
+
+
+def test_raster_pdf_dpi_color_text_layer(run):
+    res = run("raster_pdf")
+    assert find(res, "D06", actual="150 dpi")
+    assert find(res, "D05", message="彩色")
+    assert find(res, "D04")
+
+
+def test_pdf_checks_without_poppler(samples, rules, monkeypatch):
+    """雲端平台沒有 poppler 時，改用 pypdf 檢查字型嵌入、影像解析度與色彩。"""
+    from patent_review import pdf_reader
+    from patent_review.runner import check_case
+    monkeypatch.setattr(pdf_reader, "HAVE_POPPLER", False)
+    for name, rule, kw in (("raster_pdf", "D06", {"actual": "150 dpi"}), ("raster_pdf", "D05", {"message": "彩色"}),
+                           ("bad_pdf", "D05", {"message": "彩色"})):
+        d = samples / name
+        res = check_case(str(next(d.glob("*.docx"))), str(next(d.glob("*.pdf"))), rules=rules)
+        assert find(res, rule, **kw), (name, rule)
+    d = samples / "clean"
+    res = check_case(str(next(d.glob("*.docx"))), str(next(d.glob("*.pdf"))), rules=rules)
+    assert not find(res, "D03"), "嵌入字型不應被報未嵌入"
+
+
+def test_service_returns_json_and_xlsx(samples):
+    import json
+    from patent_review.service import run_check_bytes
+    d = samples / "case1_like"
+    out = run_check_bytes(next(d.glob("*.docx")).read_bytes(), next(d.glob("*.pdf")).read_bytes(), stage="final")
+    json.dumps(out, ensure_ascii=False)
+    assert out["counts"]["必改"] == 2
+    assert out["xlsx_b64"].startswith("UEsDB")   # zip 檔頭
