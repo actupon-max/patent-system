@@ -1,4 +1,4 @@
-請把格式檢查器 Patent Review System 接進這個平台（patent_pipeline，localhost:8787），作為流程中自動執行的檢查關卡。先列出整合計畫給我確認，再動手。
+請把格式檢查器 Patent Review System 接進這個平台（patent_pipeline，localhost:8787），作為流程中自動執行的檢查關卡。不需要先問我，直接執行到完成（含測試與兩案驗收），最後一次回報結果。不得修改任何既有交付物。
 
 【取得檢查器】
 - 若 ~/patent-system 不存在：git clone https://github.com/actupon-max/patent-system.git ~/patent-system
