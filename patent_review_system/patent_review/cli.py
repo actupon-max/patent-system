@@ -57,13 +57,52 @@ def serve_main(argv: list[str]) -> int:
     return 0
 
 
+def gate_main(argv: list[str]) -> int:
+    import json
+    from .pipeline import record_supabase, run_gate, summary_line
+    ap = argparse.ArgumentParser(prog="patent-review gate",
+                                 description="patent_pipeline 關卡：檢查案件某階段最新檔，報告寫到 output/_process；"
+                                             "結束碼 0=通過、1=必改（block）、2=錯誤")
+    ap.add_argument("case_dir", help="案件資料夾（內含 output/）")
+    ap.add_argument("--stage", required=True, choices=["claims", "draft", "final"])
+    ap.add_argument("--docx", help="指定 Word 檔（預設依 rules.yaml pipeline 樣式找最新版）")
+    ap.add_argument("--pdf", help="指定圖式 PDF")
+    ap.add_argument("--case", help="案號（預設為資料夾名稱）")
+    ap.add_argument("--rules", help="規則檔路徑")
+    ap.add_argument("--supabase", action="store_true",
+                    help="寫入 Supabase agent_runs／deliverables（讀 SUPABASE_URL、SUPABASE_KEY）")
+    ap.add_argument("--json", action="store_true", help="stdout 只輸出 JSON 結果（給平台程式解析）")
+    a = ap.parse_args(argv)
+    rules = load_rules(a.rules)
+    try:
+        gate = run_gate(a.case_dir, a.stage, docx=a.docx, pdf=a.pdf, case=a.case, rules=rules)
+    except (FileNotFoundError, ValueError) as e:
+        print(json.dumps({"gate": "error", "error": str(e)}, ensure_ascii=False) if a.json else f"✗ {e}")
+        return 2
+    if a.supabase:
+        try:
+            gate["supabase"] = record_supabase(gate, a.case_dir, rules)
+        except Exception as e:  # 紀錄失敗不影響關卡結果
+            gate["supabase"] = {"error": str(e)}
+    if a.json:
+        print(json.dumps(gate, ensure_ascii=False, indent=2))
+    else:
+        print(summary_line(gate))
+        for i in gate["advisory"][:20]:
+            print(f"  [{i['severity']}] {i['rule']} {i['location']}：{i['message']}")
+        print(f"報告：{gate['reports']['xlsx']}")
+    return 1 if gate["gate"] == "block" else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["serve"]:
         return serve_main(argv[1:])
+    if argv[:1] == ["gate"]:
+        return gate_main(argv[1:])
     ap = argparse.ArgumentParser(prog="patent-review",
                                  description="Patent Review System：台灣發明專利說明書與圖式格式檢查（不修改原檔）",
-                                 epilog="平台一鍵檢查：patent-review serve")
+                                 epilog="平台一鍵檢查：patent-review serve　｜　pipeline 關卡：patent-review gate")
     ap.add_argument("inputs", nargs="+", help="案件資料夾（內含 .docx 與 .pdf）或 .docx 檔")
     ap.add_argument("--pdf", help="單一 .docx 時指定圖式 PDF")
     ap.add_argument("--stage", help="檢查階段：claims（請求項初稿）/ draft（說明書初稿）/ final（送件版）")

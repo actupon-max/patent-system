@@ -50,6 +50,33 @@ patent-review serve
 1、2 步做過，3 步針對最新版檔案必改為 0，4 步確認後，才顯示「🟢 可送件」。上傳新版檔案後會提示重新檢查。
 檢查紀錄存在 Supabase `patent_checks` 表（先執行專案根目錄的 `supabase_patent_checks.sql`）。
 
+## patent_pipeline 自動關卡
+
+patent_pipeline（localhost:8787）在各階段產出後呼叫一行指令：
+
+```bash
+patent-review gate <案件資料夾> --stage claims --json --supabase   # ② 請求項初稿產出後
+patent-review gate <案件資料夾> --stage draft  --json --supabase   # ③ 整合說明書產出後
+patent-review gate <案件資料夾> --stage final  --json --supabase   # 人工覆核定稿／as_filed 之前
+```
+
+| 項目 | 內容 |
+|---|---|
+| 讀哪個檔 | `rules.yaml` 的 `pipeline.stages` 樣式，在 `output/`、`output/_versions/` 取最高 `_vN`；可用 `--docx`、`--pdf` 指定 |
+| 結果 | stdout JSON：`gate`（pass／block／error）、`counts`、`blocking`（必改）、`advisory`（建議、需人工確認）、`reports` |
+| 結束碼 | 0 通過、1 有必改（該階段不得通過）、2 找不到檔案或參數錯誤 |
+| 報告 | `output/_process/format_check_<階段>_v<N>.xlsx／.json`，加上 `format_check_<階段>_latest.json` |
+| Supabase | `--supabase` 讀環境變數 `SUPABASE_URL`、`SUPABASE_KEY`：`agent_runs` 一筆（stage=`format_check`，通過 done／未過 failed，summary 寫各嚴重度數量），`deliverables` 一筆（doc_type=`format_check`） |
+
+交付物只讀不改。block 的嚴重度在 `pipeline.block_on` 調整。
+
+Python 直接呼叫：
+
+```python
+from patent_review.pipeline import run_gate, record_supabase
+gate = run_gate(case_dir, "draft")      # gate["gate"] == "block" 時擋下
+```
+
 ## 版本
 
 - 程式版本：`patent_review/__init__.py`（`patent-review --version`）；規則版本：`rules.yaml` 的 `rules_version`

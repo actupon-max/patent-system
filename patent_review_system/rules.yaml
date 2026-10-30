@@ -257,3 +257,25 @@ semantic:
     effort: high
     max_chunk_chars: 20000
     categories: [錯字, 用語不一, 數值矛盾, 策略性字句]
+
+# ─────────────────────────────────────────
+# P. patent_pipeline 關卡（patent-review gate）
+#   檔案位置：案件資料夾/output/（含 output/_versions/），檔名同平台交付物（deliverables.docx_path）
+#   每階段依序嘗試 docx 樣式，第一個有檔案的樣式取最高 _vN
+# ─────────────────────────────────────────
+pipeline:
+  search_dirs: [output, output/_versions]
+  report_dir: output/_process
+  block_on: [必改]                 # 有這些嚴重度 → block；其餘只列 advisory
+  stages:
+    claims:
+      docx: ["② 請求項 (claims)_v*.docx", "*請求項*_v*.docx"]
+    draft:
+      docx: ["③ 整合說明書 (完稿)_v*.docx", "*整合說明書*_v*.docx"]
+      pdf: ["*圖式*.pdf"]
+    final:
+      docx: ["⑥ 人工覆核修訂定稿_v*.docx", "⑤ 說明書初步完稿*_v*.docx", "③ 整合說明書 (完稿)_v*.docx"]
+      pdf: ["*正式圖式*.pdf", "*圖式*.pdf"]
+  supabase:
+    run_stage: format_check        # agent_runs.stage
+    doc_type: format_check         # deliverables.doc_type

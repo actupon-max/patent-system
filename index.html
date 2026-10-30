@@ -966,6 +966,7 @@ const REPORT_FORMAT = "patent-review-report/1";
 const LOCAL_CHECKER = "http://127.0.0.1:8765";
 // 檢查器版本紀錄：每次發布新版檢查器時，與 patent_review_system/CHANGELOG.md 同步更新（測試會比對）
 const CHECKER_RELEASES = [
+  {version:"0.4.0", date:"2026-10-30", summary:"patent-review gate：patent_pipeline 各階段自動檢查關卡，必改即 block"},
   {version:"0.3.0", date:"2026-10-30", summary:"本機服務 patent-review serve：平台可一鍵呼叫本機檢查器"},
   {version:"0.2.0", date:"2026-10-30", summary:"平台上傳 JSON 報告並比對檔案指紋；無 poppler 時以 pypdf 檢查圖式"},
   {version:"0.1.0", date:"2026-10-30", summary:"第一版：三個檢查階段，A–E 共 30 餘項規則"},
