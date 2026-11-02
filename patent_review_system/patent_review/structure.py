@@ -65,6 +65,10 @@ class Spec:
         return t or (self.section_paras("title")[0].body if self.section_paras("title") else "")
 
 
+# 摘要頁內可出現的標題（智慧局官方空白表：摘要、中英文名稱、代表圖、代表圖符號）
+ABSTRACT_PAGE_KEYS = {"abstract", "title", "title_en", "abstract_zh", "abstract_en", "rep_figure", "rep_symbols"}
+
+
 def build_spec(path: str, rules: dict) -> Spec:
     data = read_docx(path)
     spec = Spec(data=data, rules=rules)
@@ -85,6 +89,9 @@ def build_spec(path: str, rules: dict) -> Spec:
             key, rest = matched
             if key in ("abstract",):
                 in_abstract = True
+            elif key not in ABSTRACT_PAGE_KEYS:
+                # 官方空白表：摘要頁在前，【發明說明書】起為說明書，其後的發明名稱不屬摘要
+                in_abstract = False
             # 摘要頁內再次出現的發明名稱屬於摘要，不算重複段落
             if in_abstract and key in ("title", "title_en"):
                 key = "abstract_title"

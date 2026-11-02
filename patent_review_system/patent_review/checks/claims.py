@@ -26,6 +26,7 @@ def run(spec: Spec, res: Result) -> None:
     res.meta["前置基礎詞典數"] = f"{len(terms)}（符號說明）＋{len(derived)}（由請求項推得）"
     if spec.rules.get("_enabled", {}).get("antecedent", True):
         check_antecedent(spec, res, terms, derived)
+        check_owned_intro_repeat(spec, res)
     if spec.rules.get("_enabled", {}).get("support", True):
         check_support(spec, res)
     res.tables["請求項依附"] = [
@@ -213,10 +214,15 @@ def _chain(c: Claim, by_num: dict) -> list[Claim]:
 
 
 def scan_terms(text: str, terms: list[str], cfg: dict) -> list[tuple[str, str, int, str]]:
-    """回傳 [(term, kind(intro/ref/bare), pos, marker)]，採最長詞優先、不重疊。"""
+    """回傳 [(term, kind(intro/intro_soft/ref/bare), pos, marker)]，採最長詞優先、不重疊。
+
+    intro_soft：引入詞前接 soft_intro_prefix（例「該光纖之一模場直徑」的「之」）——算已引入，
+    但不據以判定重複（同名不同所屬元件常見；重複由 check_owned_intro_repeat 比對所屬元件）。
+    """
     intro = sorted(cfg["intro_markers"], key=len, reverse=True)
     refm = sorted(cfg["ref_markers"], key=len, reverse=True)
     not_pre = cfg["not_intro_prefix"]
+    soft_pre = cfg.get("soft_intro_prefix", [])
     hits, i = [], 0
     while i < len(text):
         t = next((t for t in terms if text.startswith(t, i)), None)
@@ -232,7 +238,11 @@ def scan_terms(text: str, terms: list[str], cfg: dict) -> list[tuple[str, str, i
             m = next((m for m in intro if before.endswith(m)), None)
             if m:
                 pre = before[: len(before) - len(m)]
-                if not any(pre.endswith(x) for x in not_pre):
+                if any(pre.endswith(x) for x in not_pre):
+                    pass
+                elif any(pre.endswith(x) for x in soft_pre):
+                    kind, marker = "intro_soft", m
+                else:
                     kind, marker = "intro", m
         hits.append((t, kind, i, marker))
         i += len(t)
@@ -255,7 +265,7 @@ def check_antecedent(spec: Spec, res: Result, terms: list[str], derived: list[st
         introduced: dict[str, str] = {}
         for anc in _chain(c, by_num)[:-1]:
             for t, kind, _, _ in scan_terms(anc.text, terms, cfg):
-                if kind == "intro":
+                if kind in ("intro", "intro_soft"):
                     introduced.setdefault(t, anc.loc)
         reported = set()
         for t, kind, pos, marker in scan_terms(c.text, terms, cfg):
@@ -276,6 +286,48 @@ def check_antecedent(spec: Spec, res: Result, terms: list[str], derived: list[st
                                   severity="需人工確認" if t in low else cfg["severity"],
                                   basis=cfg["basis"], quote=quote))
                 introduced.setdefault(t, c.loc)
+            elif kind == "intro_soft":
+                introduced.setdefault(t, c.loc)
+
+
+def check_owned_intro_repeat(spec: Spec, res: Result) -> None:
+    """附屬項以「該A之一B」引入 B，而依附鏈上前項已有一字不差的「該A之一B」→ B 重複引入。
+
+    「之一」在詞典比對中不視為引入（避免「其中之一」誤報），因此「該第一光纖之一模場直徑」這類
+    帶所屬元件的引入另外比對：所屬元件 A 與名稱 B 都相同才算，不同元件各自的 B（第一／第二光纖各有
+    模場直徑）不會誤報。
+    """
+    cfg = spec.rules["antecedent"]
+    pat = cfg.get("owned_intro_pattern")
+    if not pat:
+        return
+    rx = re.compile(pat)
+    by_num = {c.num: c for c in spec.claims}
+
+    def phrases(c: Claim) -> list[tuple[str, str, int]]:
+        out = []
+        for m in rx.finditer(c.text):
+            name = _span(c.text, m.end(), cfg)
+            if len(name) >= 2 and name not in cfg.get("ignore_terms", []):
+                out.append((m.group(1), name, m.start()))
+        return out
+
+    for c in spec.claims:
+        if not c.refs:
+            continue
+        prior: dict[tuple[str, str], str] = {}
+        for anc in _chain(c, by_num)[:-1]:
+            for owner, name, _ in phrases(anc):
+                prior.setdefault((owner, name), anc.loc)
+        reported = set()
+        for owner, name, pos in phrases(c):
+            if (owner, name) in prior and (owner, name) not in reported:
+                reported.add((owner, name))
+                quote = c.text[pos: pos + len(owner) + len(name) + 3]
+                res.add(Issue(F, c.loc, "B05", f"「{name}」重複以「一」引入（前置基礎重複）",
+                              actual=f"「{quote}」；已於{prior[(owner, name)]}引入",
+                              expected=f"改為「該{owner}之該{name}」", severity=cfg["severity"],
+                              basis=cfg["basis"], quote=quote))
 
 
 def check_support(spec: Spec, res: Result) -> None:

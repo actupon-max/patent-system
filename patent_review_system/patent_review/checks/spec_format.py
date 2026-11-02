@@ -39,17 +39,19 @@ def check_sections(spec: Spec, res: Result) -> None:
         if k not in seen:
             res.add(Issue(F, "全文", "A01", f"缺少必備段落：{names[k]}", actual="未找到",
                           expected=f"【{names[k]}】", severity=cfg["severity"], basis=cfg["basis"]))
-    present = [k for k in order if k in seen]
-    actual_order = sorted(present, key=lambda k: seen[k])
-    if actual_order != present:
-        # 找出第一個順序錯誤的位置
-        for a, e in zip(actual_order, present):
-            if a != e:
-                res.add(Issue(F, spec.paras[seen[a]].loc(), "A01", f"段落順序錯誤：{names[a]} 出現在 {names[e]} 之前",
-                              actual="→".join(names[x] for x in actual_order),
-                              expected="→".join(names[x] for x in present),
-                              severity=cfg["severity"], basis=cfg["basis"]))
-                break
+    # order_groups：各組內部須依序；組與組之間不比（摘要頁在前或在後皆可）。未設定時整份 required 為一組
+    for group in cfg.get("order_groups") or [order]:
+        present = [k for k in group if k in seen]
+        actual_order = sorted(present, key=lambda k: seen[k])
+        if actual_order != present:
+            # 找出第一個順序錯誤的位置
+            for a, e in zip(actual_order, present):
+                if a != e:
+                    res.add(Issue(F, spec.paras[seen[a]].loc(), "A01", f"段落順序錯誤：{names[a]} 出現在 {names[e]} 之前",
+                                  actual="→".join(names[x] for x in actual_order),
+                                  expected="→".join(names[x] for x in present),
+                                  severity=cfg["severity"], basis=cfg["basis"]))
+                    break
 
 
 def check_paragraph_numbers(spec: Spec, res: Result) -> None:
@@ -147,10 +149,21 @@ def check_width(spec: Spec, res: Result) -> None:
     cfg = spec.rules["width_check"]
     if not cfg.get("enabled", True):
         return
-    chars = re.escape(cfg["halfwidth_chars"])
-    pat = re.compile(rf"(?:(?<={CJK})[{chars}])|(?:[{chars}](?={CJK}))")
+    exempt = cfg.get("section_exempt_chars") or {}
+    pats: dict[str, re.Pattern | None] = {}
+
+    def pat_for(section: str) -> re.Pattern | None:
+        if section not in pats:
+            chars = "".join(c for c in cfg["halfwidth_chars"] if c not in exempt.get(section, ""))
+            esc = re.escape(chars)
+            pats[section] = re.compile(rf"(?:(?<={CJK})[{esc}])|(?:[{esc}](?={CJK}))") if chars else None
+        return pats[section]
+
     for p in spec.paras:
         if p.section is None or p.section in cfg.get("skip_sections", []) or p.is_heading:
+            continue
+        pat = pat_for(p.section)
+        if pat is None:
             continue
         text = p.body
         hits = list(pat.finditer(text))

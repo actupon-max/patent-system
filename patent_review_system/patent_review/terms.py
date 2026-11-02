@@ -15,6 +15,7 @@ class SymbolEntry:
     name: str
     loc: str
     source: str   # 符號說明 / 代表圖符號 / 內文
+    group: int = 1  # 同一行列出的符號數（「12a,12b:第一、第二端」為 2）
 
 
 def norm_symbol(s: str) -> str:
@@ -25,15 +26,15 @@ def parse_symbol_list(spec: Spec, section: str) -> list[SymbolEntry]:
     pat = re.compile(spec.rules["symbols"]["list_line"])
     out = []
     for p in spec.section_paras(section):
-        for chunk in re.split(r"[；;\t]|\s{2,}", p.body):
+        for chunk in re.split(r"[；;\t\n]|\s{2,}", p.body):
             m = pat.match(chunk.strip())
             if not m:
                 continue
             name = m.group(2).strip().rstrip("。.")
-            for sym in re.split(r"\s*[、,，]\s*", m.group(1)):
-                if sym:
-                    out.append(SymbolEntry(norm_symbol(sym), name, p.loc(),
-                                           "符號說明" if section == "symbols" else "代表圖符號"))
+            syms = [s for s in re.split(r"\s*[、,，]\s*", m.group(1)) if s]
+            for sym in syms:
+                out.append(SymbolEntry(norm_symbol(sym), name, p.loc(),
+                                       "符號說明" if section == "symbols" else "代表圖符號", len(syms)))
     return out
 
 

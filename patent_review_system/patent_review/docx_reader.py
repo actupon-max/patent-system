@@ -187,6 +187,10 @@ class _Numbering:
                 il = int(lvl.get(q("w:ilvl")))
                 start = lvl.find(q("w:start"))
                 fmt = lvl.find(q("w:numFmt"))
+                if fmt is None:
+                    # 智慧局官方空白表把「0001, 0002…」寫在 mc:AlternateContent/mc:Choice 內，
+                    # 外層沒有 w:numFmt；取第一個（Choice 在 Fallback 之前，即 Word 實際顯示者）
+                    fmt = next(lvl.iter(q("w:numFmt")), None)
                 txt = lvl.find(q("w:lvlText"))
                 self.levels[(aid, il)] = {
                     "start": int(start.get(q("w:val"))) if start is not None else 1,
@@ -245,6 +249,9 @@ def _text_of(p_el) -> str:
             out.append(t.text or "")
         elif t.tag == q("w:tab"):
             out.append("\t")
+        elif t.tag == q("w:br"):
+            # 段內換行（官方空白表的符號說明：同一段落逐行「符號:文字」）；保留為換行，避免前後兩行黏成一串
+            out.append("\n")
     return "".join(out)
 
 

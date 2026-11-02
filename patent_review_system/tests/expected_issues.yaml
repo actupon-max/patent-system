@@ -21,6 +21,8 @@ cases:
   - name: 劉教授第二案
     folder: case2
     stage: final
+    # 原門檻為 A04 半形括號；2026-11-02 使用者裁示括號半形是家法，改為不得報括號（見 test_synthetic）。
+    # 本案送件版請求項的半形「, : ;」仍應抓到。
     must_find:
-      - {rule: A04, message: "("}
+      - {rule: A04, location: 請求項1}
     review_sheet: []

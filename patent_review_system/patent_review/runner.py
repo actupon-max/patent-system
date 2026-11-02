@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import re
 from pathlib import Path
 
 import yaml
@@ -13,7 +14,7 @@ from .checks import drawings as D
 from .checks import semantic as E
 from .checks import spec_format as A
 from .checks import symbols as C
-from .model import Result
+from .model import SEVERITY_ORDER, Result
 from .pdf_reader import read_pdf
 from .structure import build_spec
 
@@ -35,6 +36,29 @@ A_GROUPS = {
 def load_rules(path: str | None = None) -> dict:
     with open(path or DEFAULT_RULES, encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def apply_severity_overrides(res: Result, rules: dict) -> int:
+    """依 rules.yaml 的 severity_overrides（規則編號＋訊息正規式）改定嚴重度；回傳改動筆數。"""
+    overrides = rules.get("severity_overrides") or []
+    compiled = []
+    for o in overrides:
+        if not o.get("rule") or not o.get("message"):
+            raise ValueError(f"severity_overrides 每筆須有 rule 與 message：{o}")
+        if o.get("severity") not in SEVERITY_ORDER:
+            raise ValueError(f"severity_overrides 嚴重度不合法：{o.get('severity')}（可用：{'、'.join(SEVERITY_ORDER)}）")
+        compiled.append((o["rule"], re.compile(o["message"]), o["severity"], o.get("note", "")))
+    n = 0
+    for i in res.issues:
+        for rule, pat, sev, note in compiled:
+            if i.rule == rule and pat.search(i.message):
+                if i.severity != sev:
+                    i.severity = sev
+                    if note:
+                        i.basis = f"{i.basis}；{note}" if i.basis else note
+                    n += 1
+                break
+    return n
 
 
 def _file_info(path: str | None) -> dict | None:
@@ -83,6 +107,9 @@ def check_case(docx: str, pdf: str | None = None, *, rules: dict | None = None, 
     if "semantic" in groups:
         E.run(spec, res, use_llm=use_llm or rules["semantic"]["llm"].get("enabled", False))
 
+    changed = apply_severity_overrides(res, rules)
+    if changed:
+        res.meta["嚴重度覆寫筆數"] = changed
     if ignore:
         before = len(res.issues)
         res.issues = [i for i in res.issues if i.id not in ignore]

@@ -47,6 +47,7 @@ def check_symbol_table(spec: Spec, res: Result, pdf: PdfData | None) -> None:
             body[sym].append((name, p.loc()))
 
     fig_syms: dict[str, list[int]] = defaultdict(list)
+    ocr_pages = {pg.num for pg in pdf.pages if pg.ocr} if pdf else set()
     has_fig_text = False
     if pdf:
         for pg in pdf.pages:
@@ -88,8 +89,10 @@ def check_symbol_table(spec: Spec, res: Result, pdf: PdfData | None) -> None:
     if pdf and has_fig_text:
         for sym, pages in fig_syms.items():
             if sym not in by_sym:
+                # OCR 擷取的符號可能誤讀（README：OCR 結果一律標「需人工確認」）
+                fsev = "需人工確認" if set(pages) <= ocr_pages else sev
                 res.add(Issue("圖式", "、".join(f"第{n}頁" for n in pages), "C05", f"圖中符號 {sym} 在符號說明未列",
-                              actual=sym, expected="列入符號說明", severity=sev, basis=basis))
+                              actual=sym, expected="列入符號說明", severity=fsev, basis=basis))
         for sym in by_sym:
             if sym not in fig_syms and not sym.upper().startswith("S"):
                 res.add(Issue("圖式", "全部圖式", "C05", f"符號說明列有 {sym}，圖式中找不到",
@@ -201,6 +204,9 @@ def check_figures(spec: Spec, res: Result, pdf: PdfData | None) -> list[str]:
                     pdf_figs.append(f)
         res.meta["圖式PDF圖數"] = len(pdf_figs)
         if any(pg.words for pg in pdf.pages):
+            # 圖號全靠 OCR 擷取時可能誤讀（例：圖3 讀成圖9），改列需人工確認
+            if all(pg.ocr for pg in pdf.pages if pg.words):
+                sev = "需人工確認"
             for f in declared:
                 if f not in pdf_figs:
                     res.add(Issue("圖式", "全部圖式", "C06", f"圖式簡單說明有圖{f}，PDF 找不到此圖號",
@@ -242,8 +248,12 @@ def check_rep_figure(spec: Spec, res: Result, pdf: PdfData | None, declared: lis
             res.add(Issue(F, "代表圖之符號簡單說明", "C09", f"代表圖符號 {e.symbol} 不在符號說明中",
                           actual=f"{e.symbol}：{e.name}", expected="與符號說明一致", severity=sev, basis=basis))
         elif main[e.symbol] != e.name:
-            res.add(Issue(F, "代表圖之符號簡單說明", "C09", f"代表圖符號 {e.symbol} 名稱與符號說明不同",
-                          actual=e.name, expected=main[e.symbol], severity=sev, basis=basis))
+            # 多個符號共用一行說明（智慧局 FAQ p.67（四）允許）：合併名稱與逐項名稱不同是寫法差異，交人工確認
+            grouped = e.group > 1
+            res.add(Issue(F, "代表圖之符號簡單說明", "C09",
+                          f"代表圖符號 {e.symbol} 名稱與符號說明不同" + ("（多符號共用一行說明）" if grouped else ""),
+                          actual=e.name, expected=main[e.symbol],
+                          severity=rc.get("grouped_name_severity", sev) if grouped else sev, basis=basis))
     if pdf:
         pages = [pg for pg in pdf.pages if any(f == rep for f, _ in pg.labels)]
         if len(pages) == 1 and pages[0].words:
@@ -254,7 +264,8 @@ def check_rep_figure(spec: Spec, res: Result, pdf: PdfData | None, declared: lis
                 listed = {e.symbol for e in rep_entries}
                 for s in sorted(on_fig - listed, key=_sym_sort):
                     res.add(Issue("圖式", f"圖{rep}（第{pg.num}頁）", "C09", f"代表圖中的符號 {s} 未列於代表圖符號說明",
-                                  actual=s, expected="列入代表圖之符號簡單說明", severity=sev, basis=basis))
+                                  actual=s, expected="列入代表圖之符號簡單說明",
+                                  severity="需人工確認" if pg.ocr else sev, basis=basis))
             else:
                 res.add(Issue("圖式", f"第{pg.num}頁", "C09", "代表圖與其他圖在同一頁，未自動比對代表圖符號",
                               severity="需人工確認", basis=basis))

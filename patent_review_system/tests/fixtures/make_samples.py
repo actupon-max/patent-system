@@ -4,7 +4,8 @@
 
 clean          ：格式正確的完整案件，必改應為 0
 case1_like     ：仿第一案已知問題（圖4 未引用、請求項8 前置基礎重複）
-case2_like     ：仿第二案已知問題（半形括號）
+case2_like     ：仿第二案半形括號（家法允許，不可報）
+halfwidth     ：中文語境半形逗號、分號、冒號（第二案送件版請求項的真問題）
 dirty          ：編修殘留（螢光、彩色字、追蹤修訂、空白段落）與段號錯誤
 claims_only    ：只有請求項的初稿
 autonum        ：段號使用 Word 自動編號
@@ -21,7 +22,17 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
 
-FONT_PATH = "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"
+# 測試用中文字型：依序取第一個存在的（Linux CI／macOS 皆可跑）；可用 PATENT_REVIEW_TEST_FONT 指定
+import os
+
+_FONT_CANDIDATES = [
+    os.environ.get("PATENT_REVIEW_TEST_FONT", ""),
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/Library/Fonts/Arial Unicode.ttf",
+]
+FONT_PATH = next((f for f in _FONT_CANDIDATES if f and os.path.isfile(f)), _FONT_CANDIDATES[1])
 
 BASE = {
     "title": "光纖感測裝置",
@@ -192,6 +203,10 @@ def variants() -> dict[str, dict]:
     c2["claims"][0] = "一種光纖感測裝置，包含：一光纖(10)；以及一殼體(20)，具有一開口(21)，該光纖穿過該開口。"
     v["case2_like"] = c2
 
+    hw = copy.deepcopy(BASE)
+    hw["claims"][0] = "一種光纖感測裝置,包含:一光纖;以及一殼體,具有一開口,該光纖穿過該開口。"
+    v["halfwidth"] = hw
+
     v["dirty"] = copy.deepcopy(BASE)
     v["autonum"] = copy.deepcopy(BASE)
     return v
@@ -240,6 +255,85 @@ def make_claims_only(path: Path):
     doc.save(path)
 
 
+def _tipo_numbering(doc, num_id: str, lvl_text: str, alt_content: bool):
+    """智慧局官方空白表的自動編號：段號格式寫在 mc:AlternateContent/mc:Choice 內，外層沒有 w:numFmt。"""
+    from docx.oxml import parse_xml
+    numbering = doc.part.numbering_part.element
+    if alt_content:
+        fmt = ('<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">'
+               '<mc:Choice Requires="w14"><w:numFmt w:val="custom" w:format="0001, 0002, 0003, ..."/></mc:Choice>'
+               '<mc:Fallback><w:numFmt w:val="decimal"/></mc:Fallback></mc:AlternateContent>')
+    else:
+        fmt = '<w:numFmt w:val="decimal"/>'
+    W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    an = parse_xml(f'<w:abstractNum {W} w:abstractNumId="{num_id}"><w:lvl w:ilvl="0"><w:start w:val="1"/>{fmt}'
+                   f'<w:lvlText w:val="{lvl_text}"/></w:lvl></w:abstractNum>')
+    first_num = numbering.find(qn("w:num"))
+    if first_num is not None:
+        first_num.addprevious(an)
+    else:
+        numbering.append(an)
+    numbering.append(parse_xml(f'<w:num {W} w:numId="{num_id}"><w:abstractNumId w:val="{num_id}"/></w:num>'))
+
+
+def _numbered(p, num_id: str):
+    ppr = p._p.get_or_add_pPr()
+    numpr = OxmlElement("w:numPr")
+    il = OxmlElement("w:ilvl")
+    il.set(qn("w:val"), "0")
+    nid = OxmlElement("w:numId")
+    nid.set(qn("w:val"), num_id)
+    numpr.append(il)
+    numpr.append(nid)
+    ppr.insert(0, numpr)
+
+
+def _lines_paragraph(doc, lines: list[str]):
+    """同一段落內以 w:br 逐行（官方空白表符號說明的寫法）。"""
+    p = doc.add_paragraph()
+    for k, t in enumerate(lines):
+        r = p.add_run(t)
+        if k < len(lines) - 1:
+            r.add_break()
+    return p
+
+
+TIPO_CLAIMS = [
+    "一種光纖感測裝置，包含：一光纖，該光纖之一纖芯被一包層包覆；以及一殼體，具有一開口，該光纖穿過該開口。",
+    "如請求項1所述之光纖感測裝置，其中該纖芯之直徑為9μm。",
+    "如請求項1所述之光纖感測裝置，其中該殼體為金屬材質。",
+    "如請求項1或2所述之光纖感測裝置，其中該開口為圓形。",
+]
+
+
+def build_tipo_docx(path: Path, claims=TIPO_CLAIMS):
+    """智慧局官方空白表版面：摘要頁在前、【發明說明書】、自動編號段號與【請求項N】、符號說明半形冒號逐行。"""
+    d = BASE
+    doc = Document()
+    _setup(doc)
+    _tipo_numbering(doc, "91", "【%1】", alt_content=True)
+    _tipo_numbering(doc, "92", "【請求項%1】", alt_content=False)
+    sym_lines = [s.replace("：", ":") for s in d["symbols"]]
+    for t in ["【發明摘要】", f"【中文發明名稱】　　{d['title']}", "【英文發明名稱】　　OPTICAL FIBER SENSING DEVICE",
+              "【中文】", d["abstract"], "【英文】", "An optical fiber sensing device.", f"【指定代表圖】　　{d['rep']}",
+              "【代表圖之符號簡單說明】"]:
+        doc.add_paragraph(t)
+    _lines_paragraph(doc, [s.replace("：", ":") for s in d["rep_symbols"]])
+    for t in ["【發明說明書】", f"【中文發明名稱】　　{d['title']}", "【英文發明名稱】　　OPTICAL FIBER SENSING DEVICE"]:
+        doc.add_paragraph(t)
+    for key, head in (("field", "技術領域"), ("prior", "先前技術"), ("summary", "發明內容"),
+                      ("drawings", "圖式簡單說明"), ("embodiments", "實施方式")):
+        doc.add_paragraph(f"【{head}】")
+        for t in d[key]:
+            _numbered(doc.add_paragraph(t), "91")
+    doc.add_paragraph("【符號說明】")
+    _numbered(_lines_paragraph(doc, sym_lines), "91")
+    doc.add_paragraph("【發明申請專利範圍】")
+    for t in claims:
+        _numbered(doc.add_paragraph(t), "92")
+    doc.save(path)
+
+
 def main(out: str) -> None:
     out_dir = Path(out)
     for name, d in variants().items():
@@ -259,6 +353,16 @@ def main(out: str) -> None:
     raster.mkdir(parents=True, exist_ok=True)
     build_docx(raster / "raster_pdf_說明書.docx", BASE)
     build_raster_pdf(raster / "raster_pdf_圖式.pdf")
+    # 智慧局官方空白表版面（乾淨）＋附屬項以「該光纖之一纖芯」重複引入
+    tipo = out_dir / "tipo_form"
+    tipo.mkdir(parents=True, exist_ok=True)
+    build_tipo_docx(tipo / "tipo_form_說明書.docx")
+    build_pdf(tipo / "tipo_form_圖式.pdf")
+    dup = out_dir / "tipo_owned_dup"
+    dup.mkdir(parents=True, exist_ok=True)
+    claims = list(TIPO_CLAIMS)
+    claims[1] = "如請求項1所述之光纖感測裝置，其中該光纖之一纖芯之直徑為9μm。"
+    build_tipo_docx(dup / "tipo_owned_dup_說明書.docx", claims)
 
 
 if __name__ == "__main__":
